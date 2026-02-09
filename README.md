@@ -1,4 +1,3 @@
-@"
 # LM Reflection + Step-Local Credit Assignment
 
 This repo investigates whether **step-local credit assignment** (predicting where reasoning fails) can outperform **outcome-gated reflection** (RRR-style) on math reasoning with curriculum learning.
@@ -25,4 +24,3 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 ## Results
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
-"@ | Out-File -Encoding utf8 README.md
