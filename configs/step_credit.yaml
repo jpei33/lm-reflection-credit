@@ -1,0 +1,11 @@
+﻿inherits: base.yaml
+
+method:
+  name: step_credit
+  mistake_locator:
+    enabled: true
+    labeler: llm_verifier
+    max_steps: 12
+  credit_assignment:
+    pre_error_weight: 0.1
+    post_error_weight: 1.0

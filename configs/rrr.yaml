@@ -1,0 +1,11 @@
+﻿inherits: base.yaml
+
+method:
+  name: rrr
+  use_retry: true
+  reflection:
+    structured: true
+    max_tokens: 192
+    forbid_answer_in_reflection: true
+  reward:
+    type: outcome_gated_reflection

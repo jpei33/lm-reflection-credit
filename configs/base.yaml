@@ -1,0 +1,26 @@
+﻿project_name: lm-reflection-credit
+seed: 1234
+
+model:
+  name: "YOUR_TINKER_1_5B_MODEL_NAME"
+  max_new_tokens: 512
+  temperature: 0.7
+  top_p: 0.95
+
+data:
+  dataset: gsm8k
+  split: train
+  # you’ll later replace this with your curriculum JSONL paths
+  curriculum_paths: []
+
+train:
+  batch_size: 8
+  grad_accum: 1
+  lr: 1.0e-5
+  steps: 200
+  rollouts_per_prompt: 4
+
+logging:
+  use_wandb: true
+  wandb_project: lm-reflection-credit
+  save_dir: results/runs
