@@ -1,0 +1,6 @@
+﻿tqdm
+datasets
+numpy
+pandas
+wandb
+python-dotenv
