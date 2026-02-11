@@ -1,6 +1,9 @@
 import json
 import time
 from pathlib import Path
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
 from src.utils.answer_parser import extract_final_answer
 
