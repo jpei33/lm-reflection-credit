@@ -1,40 +1,77 @@
-import os
 import time
 from typing import Dict, Any, Tuple
 
-from dotenv import load_dotenv
-load_dotenv()
-
 from src.utils.generator import GenConfig
 
+
 class TinkerGenerator:
-    def __init__(self, model_name: str):
-        self.model_name = model_name
+    """
+    Minimal generator wrapper around Tinker SamplingClient.
+
+    Uses the Tinker Python SDK:
+      - ServiceClient() -> create_lora_training_client(...)
+      - training_client.save_weights_and_get_sampling_client(...)
+      - sampling_client.sample(...)
+    """
+    def __init__(self, base_model: str, rank: int = 8, sampler_name: str = "sampler"):
+        import os
+        import tinker
+        from tinker import types
+
         api_key = os.getenv("TINKER_API_KEY")
         if not api_key:
-            raise RuntimeError("Missing TINKER_API_KEY in environment (.env).")
+            raise RuntimeError("Missing TINKER_API_KEY in environment (.env or shell).")
 
-        # Tinker SDK imports
-        import tinker
-
-        # NOTE: API shape can vary by SDK version; we’ll adjust if needed
+        # ServiceClient reads TINKER_API_KEY from env.
         self.tinker = tinker
-        self.client = tinker.Client(api_key=api_key)
+        self.types = types
+        self.base_model = base_model
 
-    def generate(self, prompt: str, cfg: GenConfig) -> Tuple[str, Dict[str, Any]]:
-        t0 = time.time()
+        self.service = tinker.ServiceClient()
 
-        # Typical chat/instruct style payload:
-        resp = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=cfg.temperature,
-            top_p=cfg.top_p,
-            max_tokens=cfg.max_new_tokens,
+        # Create a LoRA training client (even for eval-only).
+        # This is the standard entrypoint shown in the docs. :contentReference[oaicite:2]{index=2}
+        self.training_client = self.service.create_lora_training_client(
+            base_model=base_model,
+            rank=rank,
         )
 
+        # Tokenizer for encode/decode
+        self.tokenizer = self.training_client.get_tokenizer()
+
+        # Create a sampler checkpoint and get a SamplingClient.
+        self.sampling_client = self.training_client.save_weights_and_get_sampling_client(
+            name=sampler_name
+        )
+
+    def generate(self, prompt: str, cfg: GenConfig) -> Tuple[str, Dict[str, Any]]:
+        # Encode prompt into a ModelInput
+        prompt_tokens = self.tokenizer.encode(prompt, add_special_tokens=True)
+        model_input = self.types.ModelInput.from_ints(tokens=prompt_tokens)
+
+        params = self.tinker.SamplingParams(
+            max_tokens=cfg.max_new_tokens,
+            temperature=cfg.temperature,
+            top_p=cfg.top_p,
+            # stop=["\n\n"]  # optional; you can add stops later
+        )
+
+        t0 = time.time()
+        # One sample
+        res = self.sampling_client.sample(
+            prompt=model_input,
+            sampling_params=params,
+            num_samples=1,
+        ).result()
         dt = time.time() - t0
 
-        text = resp.choices[0].message["content"] if isinstance(resp.choices[0].message, dict) else resp.choices[0].message.content
-        meta = {"backend": "tinker", "model_name": self.model_name, "latency_s": dt}
+        # Decode generated tokens
+        out_tokens = res.sequences[0].tokens
+        text = self.tokenizer.decode(out_tokens).strip()
+
+        meta = {
+            "backend": "tinker",
+            "model_name": self.base_model,
+            "latency_s": dt,
+        }
         return text, meta

@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 
-from src.utils.answer_parser import extract_final_answer
+from src.utils.answer_parser import extract_final_answer_strict
 
 
 def build_prompt(question: str) -> str:
@@ -91,10 +91,10 @@ def run_rollouts(
             ex = json.loads(line)
             question = ex["question"]
             gt_solution = ex["answer"]
-            gt_final = extract_final_answer(gt_solution)
+            gt_final = extract_final_answer_strict(gt_solution)
 
             model_solution, meta = gen(question)
-            pred_final = extract_final_answer(model_solution)
+            pred_final = extract_final_answer_strict(model_solution)
 
             correct = (pred_final == gt_final)
             n += 1

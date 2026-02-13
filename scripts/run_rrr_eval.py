@@ -1,7 +1,11 @@
 import argparse
+from dotenv import load_dotenv
 
 from src.rrr.rrr_infer import run_rrr_eval
 from src.utils.generator import GenConfig
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 def main():
