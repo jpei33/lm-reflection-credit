@@ -12,9 +12,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backend", choices=["hf", "tinker"], default="hf")
     ap.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
-    ap.add_argument("--limit", type=int, default=5)
+    ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--input", dest="input_jsonl", default="data/processed/gsm8k_train.jsonl")
     ap.add_argument("--output", dest="output_jsonl", default="results/runs/rrr_eval.jsonl")
+    ap.add_argument("--no_reflect", action="store_true")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--retry_only", action="store_true")
 
     # Optional decoding knobs
     ap.add_argument("--solve_max_new_tokens", type=int, default=256)
@@ -24,6 +27,7 @@ def main():
     ap.add_argument("--top_p", type=float, default=0.95)
     ap.add_argument("--reflect_temperature", type=float, default=0.3)
     ap.add_argument("--reflect_top_p", type=float, default=0.9)
+    ap.add_argument("--retry_temperature", type=float, default=None)
 
     args = ap.parse_args()
 
@@ -51,9 +55,11 @@ def main():
         ),
         retry_cfg=GenConfig(
             max_new_tokens=args.retry_max_new_tokens,
-            temperature=args.temperature,
+            temperature=args.retry_temperature if args.retry_temperature is not None else args.temperature,
             top_p=args.top_p,
         ),
+        no_reflect=args.no_reflect,
+        retry_only=args.retry_only
     )
 
 

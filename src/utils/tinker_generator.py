@@ -44,7 +44,7 @@ class TinkerGenerator:
             name=sampler_name
         )
 
-    def generate(self, prompt: str, cfg: GenConfig) -> Tuple[str, Dict[str, Any]]:
+    def generate(self, prompt: str, cfg: GenConfig, seed: int = 0) -> Tuple[str, Dict[str, Any]]:
         # Encode prompt into a ModelInput
         prompt_tokens = self.tokenizer.encode(prompt, add_special_tokens=True)
         model_input = self.types.ModelInput.from_ints(tokens=prompt_tokens)
@@ -53,6 +53,7 @@ class TinkerGenerator:
             max_tokens=cfg.max_new_tokens,
             temperature=cfg.temperature,
             top_p=cfg.top_p,
+            seed=seed,             # only if Tinker supports it
             # stop=["\n\n"]  # optional; you can add stops later
         )
 
@@ -73,5 +74,9 @@ class TinkerGenerator:
             "backend": "tinker",
             "model_name": self.base_model,
             "latency_s": dt,
+            "prompt_tokens": len(prompt_tokens),
+            "completion_tokens": len(out_tokens),
+            "total_tokens": len(prompt_tokens) + len(out_tokens),
+            "seed": seed,
         }
         return text, meta

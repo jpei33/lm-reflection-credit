@@ -1,13 +1,173 @@
 import os
 import json
-from dataclasses import dataclass
 from typing import Optional
+import re
 
-from src.utils.answer_parser import extract_final_answer_strict, extract_final_answer_loose
+from src.utils.answer_parser import extract_final_answer_strict, extract_final_answer_loose, math_strict_equal
 from src.utils.generator import GenConfig, Generator
 
+# --------- Helpers for MATH / normalization ---------
 
-def build_solve_prompt(question: str) -> str:
+_BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
+
+def extract_last_boxed_balanced(text: str) -> Optional[str]:
+    if not text:
+        return None
+    idx = text.rfind(r"\boxed{")
+    if idx == -1:
+        return None
+
+    i = idx + len(r"\boxed{")
+    depth = 1
+    start = i
+    while i < len(text) and depth > 0:
+        ch = text[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+
+    if depth != 0:
+        return None
+    return text[start:i-1].strip()
+
+
+def extract_math_final(text: str) -> Optional[str]:
+    """
+    Extract last \\boxed{...} if present (balanced braces), else last non-empty line.
+    """
+    if not text:
+        return None
+
+    boxed = extract_last_boxed_balanced(text)
+    if boxed:
+        return boxed
+
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return lines[-1] if lines else None
+
+def normalize_answer(ans: Optional[str]) -> Optional[str]:
+    """
+    Light normalization to avoid format mismatches:
+    - strip whitespace
+    - remove enclosing $...$
+    - remove commas in numbers (1,000 -> 1000)
+    - collapse spaces
+    """
+    if ans is None:
+        return None
+    s = str(ans).strip()
+    if not s:
+        return None
+
+    # Strip common LaTeX math delimiters
+    if s.startswith("$") and s.endswith("$") and len(s) >= 2:
+        s = s[1:-1].strip()
+
+    # Remove commas inside numbers
+    s = re.sub(r"(?<=\d),(?=\d)", "", s)
+
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+
+    return s if s else None
+
+def parse_gt_final(ex: dict) -> Optional[str]:
+    """
+    Dataset-aware gold final answer extraction.
+    - GSM8K: gold 'answer' contains #### delimiter.
+    - MATH: processed data should have final answer in ex['answer'] already,
+            but we also support boxed/solution-like strings.
+    """
+    dataset = ex.get("dataset", "")
+    gt_sol = ex.get("answer", "")
+
+    if dataset == "gsm8k":
+        gt = extract_final_answer_strict(gt_sol)  # expects ####
+        return normalize_answer(gt)
+
+    if dataset == "math":
+        gt = normalize_answer(gt_sol)
+        if gt is None:
+            return None
+        # If stored string still contains \\boxed{...}, extract it
+        if "\\boxed{" in gt_sol:
+            gt2 = extract_math_final(gt_sol)
+            return normalize_answer(gt2)
+        return gt
+
+    # Fallback: try strict parser, else boxed, else raw.
+    gt = extract_final_answer_strict(gt_sol)
+    if gt is not None:
+        return normalize_answer(gt)
+    gt2 = extract_math_final(gt_sol)
+    if gt2 is not None:
+        return normalize_answer(gt2)
+    return normalize_answer(gt_sol)
+
+def parse_pred_final(sol_text: str) -> dict:
+    """
+    Parse model prediction final answer with fallbacks.
+    Returns dict with strict/loose/boxed values (all normalized).
+    """
+    strict = normalize_answer(extract_final_answer_strict(sol_text))
+    loose = normalize_answer(extract_final_answer_loose(sol_text))
+
+    boxed = None
+    if "\\boxed{" in (sol_text or ""):
+        boxed = normalize_answer(extract_math_final(sol_text))
+
+    # If strict/loose failed, fallback to boxed or last line
+    if strict is None and boxed is not None:
+        strict = boxed
+    if loose is None and boxed is not None:
+        loose = boxed
+
+    if strict is None:
+        strict = normalize_answer(extract_math_final(sol_text))
+    if loose is None:
+        loose = normalize_answer(extract_math_final(sol_text))
+
+    return {"strict": strict, "loose": loose, "boxed": boxed}
+
+# def answers_match(a: Optional[str], b: Optional[str]) -> bool:
+#     return (a is not None) and (b is not None) and (normalize_answer(a) == normalize_answer(b))
+
+def strict_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
+    if pred is None or gt is None:
+        return False
+    dataset = (ex.get("dataset") or "").lower()
+    if dataset == "math":
+        return math_strict_equal(pred, gt)   # numeric equivalence + normalization
+    return normalize_answer(pred) == normalize_answer(gt)
+
+def loose_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
+    # You can keep loose as string equality or also use math_strict_equal for math.
+    if pred is None or gt is None:
+        return False
+    dataset = (ex.get("dataset") or "").lower()
+    if dataset == "math":
+        return math_strict_equal(pred, gt)
+    return normalize_answer(pred) == normalize_answer(gt)
+
+# --------- Prompts ---------
+
+def build_solve_prompt(question: str, dataset: str = "") -> str:
+    dataset = (dataset or "").lower()
+
+    if dataset == "math":
+        return (
+            "Solve the problem. Be concise.\n"
+            "Requirements:\n"
+            "- Write a short solution (no extra commentary).\n"
+            "- Put ONLY the final answer on the last line as \\boxed{...}.\n"
+            "- Do not write anything after the final line.\n\n"
+            f"Problem:\n{question}\n\n"
+            "Solution:\n"
+        )
+
+    # default: GSM8K-style
     return (
         "You are a helpful math tutor. Solve the problem step by step.\n"
         "IMPORTANT:\n"
@@ -19,12 +179,11 @@ def build_solve_prompt(question: str) -> str:
         "Solution (end with the final line):\n"
     )
 
-
 def build_reflection_prompt(
     question: str,
     solution: str,
     pred_final: Optional[str],
-    gt_final: str,
+    gt_final: str,  # kept in signature for compatibility; not shown in prompt
 ) -> str:
     return (
         "You are analyzing a failed math solution to improve the next attempt.\n"
@@ -36,11 +195,23 @@ def build_reflection_prompt(
         f"Problem:\n{question}\n\n"
         f"Model's previous solution:\n{solution}\n\n"
         f"Model's parsed final answer: {pred_final}\n"
-        f"Correct final answer: {gt_final}\n"
     )
 
+def build_retry_prompt(question: str, reflection: str, dataset: str = "") -> str:
+    dataset = (dataset or "").lower()
 
-def build_retry_prompt(question: str, reflection: str) -> str:
+    if dataset == "math":
+        return (
+            "Use the reflection to fix the solution. Be concise.\n"
+            "Requirements:\n"
+            "- Put ONLY the final answer on the last line as \\boxed{...}.\n"
+            "- Do not write anything after the final line.\n\n"
+            f"Reflection:\n{reflection}\n\n"
+            f"Problem:\n{question}\n\n"
+            "Solution:\n"
+        )
+
+    # default: GSM8K-style
     return (
         "You are a helpful math tutor. Use the reflection to solve correctly.\n"
         "IMPORTANT:\n"
@@ -53,12 +224,11 @@ def build_retry_prompt(question: str, reflection: str) -> str:
         "Solution (end with the final line):\n"
     )
 
-
 def _first_3_lines(text: str) -> str:
     lines = (text or "").splitlines()
     return "\n".join(lines[:3]).strip()
 
-
+# --------- Main eval ---------
 def run_rrr_eval(
     gen: Generator,
     input_jsonl: str,
@@ -67,50 +237,82 @@ def run_rrr_eval(
     solve_cfg: GenConfig = GenConfig(max_new_tokens=256, temperature=0.7, top_p=0.95),
     reflect_cfg: GenConfig = GenConfig(max_new_tokens=128, temperature=0.3, top_p=0.9),
     retry_cfg: GenConfig = GenConfig(max_new_tokens=256, temperature=0.7, top_p=0.95),
+    no_reflect: bool = False,
+    retry_only: bool = False,
+    seed: int = 0,
 ):
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
     n = 0
-
-    # We'll report "loose" accuracy as primary (more realistic),
-    # and keep "strict" as an ablation metric.
     first_correct_loose = 0
     first_correct_strict = 0
-
     retry_correct_loose = 0
     retry_correct_strict = 0
     retries_attempted = 0
 
+    tokens_solve = 0
+    tokens_reflect = 0
+    tokens_retry = 0
+    tokens_total = 0
+
+    latency_total = 0.0
+    latency_solve = 0.0
+    latency_reflect = 0.0
+    latency_retry = 0.0
+
+    # For nicer progress printing: know how many examples we'll run
+    if limit is None:
+        with open(input_jsonl, "r", encoding="utf-8") as f_tmp:
+            total_examples = sum(1 for _ in f_tmp)
+    else:
+        total_examples = limit
+
     with open(input_jsonl, "r", encoding="utf-8") as f_in, open(output_jsonl, "w", encoding="utf-8") as f_out:
         for i, line in enumerate(f_in):
-            if i >= limit:
+            if limit is not None and i >= limit:
                 break
 
             ex = json.loads(line)
-            q = ex["question"]
-            gt_sol = ex["answer"]
-            gt_final = extract_final_answer_strict(gt_sol)  # GSM8K answers have #### in the gold
-            if gt_final is None:
-                # skip weird example
+            dataset = ex.get("dataset", "")
+            q = ex.get("question", "")
+            gt_final = parse_gt_final(ex)
+
+            if not q or gt_final is None:
                 continue
 
-            print(f"[RRR] Example {i+1}/{limit}", flush=True)
+            print(f"[RRR] Example {n+1}/{total_examples}", flush=True)
 
-            # 1) Solve
-            sol1, meta1 = gen.generate(build_solve_prompt(q), solve_cfg)
+            # 1) Solve (seeded)
+            sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
 
-            pred1_strict = extract_final_answer_strict(sol1)
-            pred1_loose = extract_final_answer_loose(sol1)
 
-            ok1_strict = (pred1_strict == gt_final)
-            ok1_loose = (pred1_loose == gt_final)
+            # tokens
+            t = int(meta1.get("total_tokens", 0))
+            tokens_solve += t
+            tokens_total += t
+
+            # latency
+            lt = float(meta1.get("latency_s", 0.0))
+            latency_solve += lt
+            latency_total += lt
+
+            p1 = parse_pred_final(sol1)
+            pred1_strict = p1["strict"]
+            pred1_loose = p1["loose"]
+
+            ok1_strict = strict_match(ex, pred1_strict, gt_final)
+            ok1_loose = loose_match(ex, pred1_loose, gt_final)
+
 
             first_correct_strict += int(ok1_strict)
             first_correct_loose += int(ok1_loose)
 
             rec = {
                 "question": q,
+                "dataset": ex.get("dataset"),
+                "meta": ex.get("meta", {}),
                 "gt_final": gt_final,
+                "seed": seed,
                 "first": {
                     "solution": sol1,
                     "pred_final_strict": pred1_strict,
@@ -123,30 +325,68 @@ def run_rrr_eval(
                 "retry": None,
             }
 
-            # Decide whether to reflect+retry based on LOOSE correctness (practical)
-            if not ok1_loose:
+            # Reflect + retry based on LOOSE correctness
+            if (not ok1_loose) and (not no_reflect):
                 retries_attempted += 1
-                print("[RRR]  ↳ wrong (loose), reflecting", flush=True)
 
-                refl_text, meta_r = gen.generate(
-                    build_reflection_prompt(q, sol1, pred1_loose, gt_final),
-                    reflect_cfg,
+                if retry_only:
+                    # --- RETRY-ONLY: no reflection generation ---
+                    print("[RRR]  -> wrong (loose), retry-only (no reflection)", flush=True)
+                    refl_text = ""           # or "Retry carefully." if you want a fixed hint
+                    meta_r = {"skipped": True, "total_tokens": 0, "latency_s": 0.0}
+                else:
+                    # --- NORMAL: generate reflection ---
+                    print("[RRR]  -> wrong (loose), reflecting", flush=True)
+
+                    refl_text, meta_r = gen.generate(
+                        build_reflection_prompt(q, sol1, pred1_loose, gt_final),
+                        reflect_cfg,
+                        seed=seed + i + 10_000,
+                    )
+
+                    # tokens
+                    t = int(meta_r.get("total_tokens", 0))
+                    tokens_reflect += t
+                    tokens_total += t
+
+                    # latency
+                    lt = float(meta_r.get("latency_s", 0.0))
+                    latency_reflect += lt
+                    latency_total += lt
+
+                    refl_text = _first_3_lines(refl_text)
+
+                print("[RRR]  -> retrying", flush=True)
+
+                sol2, meta2 = gen.generate(
+                    build_retry_prompt(q, refl_text, dataset),
+                    retry_cfg,
+                    seed=seed + i + 20_000,
                 )
-                refl_text = _first_3_lines(refl_text)
 
-                print("[RRR]  ↳ retrying", flush=True)
-                sol2, meta2 = gen.generate(build_retry_prompt(q, refl_text), retry_cfg)
+                # tokens
+                t = int(meta2.get("total_tokens", 0))
+                tokens_retry += t
+                tokens_total += t
 
-                pred2_strict = extract_final_answer_strict(sol2)
-                pred2_loose = extract_final_answer_loose(sol2)
+                # latency
+                lt = float(meta2.get("latency_s", 0.0))
+                latency_retry += lt
+                latency_total += lt
 
-                ok2_strict = (pred2_strict == gt_final)
-                ok2_loose = (pred2_loose == gt_final)
+                p2 = parse_pred_final(sol2)
+                pred2_strict = p2["strict"]
+                pred2_loose = p2["loose"]
+
+                ok2_strict = strict_match(ex, pred2_strict, gt_final)
+                ok2_loose = loose_match(ex, pred2_loose, gt_final)
 
                 retry_correct_strict += int(ok2_strict)
                 retry_correct_loose += int(ok2_loose)
 
+                # Record reflection info (skipped vs generated)
                 rec["reflection"] = {"text": refl_text, "meta": meta_r}
+
                 rec["retry"] = {
                     "solution": sol2,
                     "pred_final_strict": pred2_strict,
@@ -159,6 +399,7 @@ def run_rrr_eval(
             f_out.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
 
+
     print(f"Wrote {n} examples to {output_jsonl}")
     print(f"First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
     print(f"First-try accuracy (strict): {first_correct_strict}/{n} = {first_correct_strict/max(n,1):.3f}")
@@ -167,3 +408,11 @@ def run_rrr_eval(
         print(f"Retry success (strict| conditional): {retry_correct_strict}/{retries_attempted} = {retry_correct_strict/max(retries_attempted,1):.3f}")
         print(f"Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{n} = {(first_correct_loose+retry_correct_loose)/max(n,1):.3f}")
         print(f"Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{n} = {(first_correct_strict+retry_correct_strict)/max(n,1):.3f}")
+
+    print(f"Tokens used (total): {tokens_total}")
+    print(f"Avg tokens / example: {tokens_total/max(n,1):.1f}")
+    print(f"Tokens by stage: solve={tokens_solve}, reflect={tokens_reflect}, retry={tokens_retry}")
+
+    print(f"Total latency (s): {latency_total:.2f}")
+    print(f"Avg latency / example (s): {latency_total/max(n,1):.3f}")
+    print(f"Latency by stage: solve={latency_solve:.2f}, reflect={latency_reflect:.2f}, retry={latency_retry:.2f}")
