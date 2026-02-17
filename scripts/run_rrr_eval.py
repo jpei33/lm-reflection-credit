@@ -28,6 +28,8 @@ def main():
     ap.add_argument("--reflect_temperature", type=float, default=0.3)
     ap.add_argument("--reflect_top_p", type=float, default=0.9)
     ap.add_argument("--retry_temperature", type=float, default=None)
+    ap.add_argument("--reflection_mode", choices=["full", "tail", "plan"], default="full")
+
 
     args = ap.parse_args()
 
@@ -59,7 +61,9 @@ def main():
             top_p=args.top_p,
         ),
         no_reflect=args.no_reflect,
-        retry_only=args.retry_only
+        retry_only=args.retry_only,
+        seed=args.seed,
+        reflection_mode=args.reflection_mode,   
     )
 
 

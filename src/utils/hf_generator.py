@@ -21,6 +21,7 @@ class HFGenerator:
         # Optional determinism knobs (helps on GPU)
         self.torch.backends.cudnn.deterministic = True
         self.torch.backends.cudnn.benchmark = False
+        print("MODEL DEVICE:", next(self.model.parameters()).device)    
 
         self.model.eval()
 

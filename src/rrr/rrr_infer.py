@@ -3,7 +3,11 @@ import json
 from typing import Optional
 import re
 
-from src.utils.answer_parser import extract_final_answer_strict, extract_final_answer_loose, math_strict_equal
+from src.utils.answer_parser import (
+    extract_final_answer_strict,
+    extract_final_answer_loose,
+    math_strict_equal,
+)
 from src.utils.generator import GenConfig, Generator
 
 # --------- Helpers for MATH / normalization ---------
@@ -11,6 +15,9 @@ from src.utils.generator import GenConfig, Generator
 _BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
 
 def extract_last_boxed_balanced(text: str) -> Optional[str]:
+    """
+    Return content of the last \boxed{...} with balanced braces.
+    """
     if not text:
         return None
     idx = text.rfind(r"\boxed{")
@@ -30,12 +37,12 @@ def extract_last_boxed_balanced(text: str) -> Optional[str]:
 
     if depth != 0:
         return None
-    return text[start:i-1].strip()
+    return text[start : i - 1].strip()
 
 
 def extract_math_final(text: str) -> Optional[str]:
     """
-    Extract last \\boxed{...} if present (balanced braces), else last non-empty line.
+    Extract last \boxed{...} if present (balanced braces), else last non-empty line.
     """
     if not text:
         return None
@@ -46,6 +53,7 @@ def extract_math_final(text: str) -> Optional[str]:
 
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return lines[-1] if lines else None
+
 
 def normalize_answer(ans: Optional[str]) -> Optional[str]:
     """
@@ -73,6 +81,7 @@ def normalize_answer(ans: Optional[str]) -> Optional[str]:
 
     return s if s else None
 
+
 def parse_gt_final(ex: dict) -> Optional[str]:
     """
     Dataset-aware gold final answer extraction.
@@ -91,13 +100,12 @@ def parse_gt_final(ex: dict) -> Optional[str]:
         gt = normalize_answer(gt_sol)
         if gt is None:
             return None
-        # If stored string still contains \\boxed{...}, extract it
         if "\\boxed{" in gt_sol:
             gt2 = extract_math_final(gt_sol)
             return normalize_answer(gt2)
         return gt
 
-    # Fallback: try strict parser, else boxed, else raw.
+    # Fallback
     gt = extract_final_answer_strict(gt_sol)
     if gt is not None:
         return normalize_answer(gt)
@@ -105,6 +113,7 @@ def parse_gt_final(ex: dict) -> Optional[str]:
     if gt2 is not None:
         return normalize_answer(gt2)
     return normalize_answer(gt_sol)
+
 
 def parse_pred_final(sol_text: str) -> dict:
     """
@@ -118,7 +127,7 @@ def parse_pred_final(sol_text: str) -> dict:
     if "\\boxed{" in (sol_text or ""):
         boxed = normalize_answer(extract_math_final(sol_text))
 
-    # If strict/loose failed, fallback to boxed or last line
+    # fallback to boxed / last line
     if strict is None and boxed is not None:
         strict = boxed
     if loose is None and boxed is not None:
@@ -131,19 +140,17 @@ def parse_pred_final(sol_text: str) -> dict:
 
     return {"strict": strict, "loose": loose, "boxed": boxed}
 
-# def answers_match(a: Optional[str], b: Optional[str]) -> bool:
-#     return (a is not None) and (b is not None) and (normalize_answer(a) == normalize_answer(b))
 
 def strict_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
     if pred is None or gt is None:
         return False
     dataset = (ex.get("dataset") or "").lower()
     if dataset == "math":
-        return math_strict_equal(pred, gt)   # numeric equivalence + normalization
+        return math_strict_equal(pred, gt)
     return normalize_answer(pred) == normalize_answer(gt)
 
+
 def loose_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
-    # You can keep loose as string equality or also use math_strict_equal for math.
     if pred is None or gt is None:
         return False
     dataset = (ex.get("dataset") or "").lower()
@@ -179,11 +186,16 @@ def build_solve_prompt(question: str, dataset: str = "") -> str:
         "Solution (end with the final line):\n"
     )
 
-def build_reflection_prompt(
+
+def _tail_lines(text: str, n_lines: int = 6) -> str:
+    lines = (text or "").splitlines()
+    return "\n".join(lines[-n_lines:]).strip()
+
+
+def build_reflection_prompt_full(
     question: str,
     solution: str,
     pred_final: Optional[str],
-    gt_final: str,  # kept in signature for compatibility; not shown in prompt
 ) -> str:
     return (
         "You are analyzing a failed math solution to improve the next attempt.\n"
@@ -197,16 +209,71 @@ def build_reflection_prompt(
         f"Model's parsed final answer: {pred_final}\n"
     )
 
+
+def build_reflection_prompt_tail(
+    question: str,
+    solution: str,
+    pred_final: Optional[str],
+) -> str:
+    tail = _tail_lines(solution, n_lines=6)
+    return (
+        "You are diagnosing why the model's final answer is likely wrong.\n"
+        "DO NOT include the correct final answer or any numeric final answer.\n"
+        "Do NOT rewrite the full solution.\n"
+        "Output exactly 3 lines in this format:\n"
+        "ERROR_TYPE: <short>\n"
+        "LIKELY_STEP: <step number or 'unknown'>\n"
+        "FIX_PLAN: <one sentence checklist of what to verify>\n\n"
+        f"Problem:\n{question}\n\n"
+        f"Model's parsed final answer (may be wrong): {pred_final}\n\n"
+        f"Last lines of model work (may be wrong):\n{tail}\n"
+    )
+
+
+def build_reflection_prompt_plan(
+    question: str,
+    pred_final: Optional[str],
+) -> str:
+    return (
+        "You will solve the problem again. First, write a short plan/checklist.\n"
+        "Rules:\n"
+        "- Do NOT reference or quote any previous solution.\n"
+        "- Do NOT include the correct final answer or any numeric final answer.\n"
+        "- Output exactly 3 lines:\n"
+        "ERROR_TYPE: <most likely mistake category>\n"
+        "LIKELY_STEP: <where mistakes often happen, or 'unknown'>\n"
+        "FIX_PLAN: <one sentence checklist of verifications>\n\n"
+        f"Problem:\n{question}\n\n"
+        f"Model's parsed final answer (may be wrong): {pred_final}\n"
+    )
+
+
+def build_reflection_prompt(
+    mode: str,
+    question: str,
+    solution: str,
+    pred_final: Optional[str],
+) -> str:
+    mode = (mode or "full").lower()
+    if mode == "plan":
+        return build_reflection_prompt_plan(question, pred_final)
+    if mode == "tail":
+        return build_reflection_prompt_tail(question, solution, pred_final)
+    return build_reflection_prompt_full(question, solution, pred_final)
+
+
 def build_retry_prompt(question: str, reflection: str, dataset: str = "") -> str:
     dataset = (dataset or "").lower()
 
     if dataset == "math":
         return (
-            "Use the reflection to fix the solution. Be concise.\n"
-            "Requirements:\n"
+            "Solve the problem again from scratch using the checklist.\n"
+            "IMPORTANT:\n"
+            "- Do NOT reuse or reference the previous solution.\n"
+            "- Keep the solution concise.\n"
             "- Put ONLY the final answer on the last line as \\boxed{...}.\n"
             "- Do not write anything after the final line.\n\n"
-            f"Reflection:\n{reflection}\n\n"
+            f"Checklist:\n{reflection}\n\n"
             f"Problem:\n{question}\n\n"
             "Solution:\n"
         )
@@ -224,11 +291,26 @@ def build_retry_prompt(question: str, reflection: str, dataset: str = "") -> str
         "Solution (end with the final line):\n"
     )
 
+
 def _first_3_lines(text: str) -> str:
     lines = (text or "").splitlines()
     return "\n".join(lines[:3]).strip()
 
+
+# --------- Reflection usefulness heuristic ---------
+
+_REFLECT_KEYWORDS = [
+    "recheck", "verify", "recompute", "substitute", "simplify", "factor",
+    "cases", "domain", "constraint", "units", "re-derive", "derive", "check",
+    "plug", "plug in", "compute again", "arithmetic", "algebra"
+]
+
+def reflection_useful_heuristic(reflection_text: str) -> bool:
+    t = (reflection_text or "").lower()
+    return any(k in t for k in _REFLECT_KEYWORDS)
+
 # --------- Main eval ---------
+
 def run_rrr_eval(
     gen: Generator,
     input_jsonl: str,
@@ -240,6 +322,7 @@ def run_rrr_eval(
     no_reflect: bool = False,
     retry_only: bool = False,
     seed: int = 0,
+    reflection_mode: str = "full",
 ):
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
@@ -249,6 +332,8 @@ def run_rrr_eval(
     retry_correct_loose = 0
     retry_correct_strict = 0
     retries_attempted = 0
+
+    useful_reflections = 0
 
     tokens_solve = 0
     tokens_reflect = 0
@@ -285,7 +370,6 @@ def run_rrr_eval(
             # 1) Solve (seeded)
             sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
 
-
             # tokens
             t = int(meta1.get("total_tokens", 0))
             tokens_solve += t
@@ -302,7 +386,6 @@ def run_rrr_eval(
 
             ok1_strict = strict_match(ex, pred1_strict, gt_final)
             ok1_loose = loose_match(ex, pred1_loose, gt_final)
-
 
             first_correct_strict += int(ok1_strict)
             first_correct_loose += int(ok1_loose)
@@ -332,14 +415,16 @@ def run_rrr_eval(
                 if retry_only:
                     # --- RETRY-ONLY: no reflection generation ---
                     print("[RRR]  -> wrong (loose), retry-only (no reflection)", flush=True)
-                    refl_text = ""           # or "Retry carefully." if you want a fixed hint
+                    refl_text = ""
+                    useful = False
                     meta_r = {"skipped": True, "total_tokens": 0, "latency_s": 0.0}
                 else:
-                    # --- NORMAL: generate reflection ---
-                    print("[RRR]  -> wrong (loose), reflecting", flush=True)
+                    # --- NORMAL: generate reflection (mode-controlled) ---
+                    print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
 
+                    refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
                     refl_text, meta_r = gen.generate(
-                        build_reflection_prompt(q, sol1, pred1_loose, gt_final),
+                        refl_prompt,
                         reflect_cfg,
                         seed=seed + i + 10_000,
                     )
@@ -355,6 +440,8 @@ def run_rrr_eval(
                     latency_total += lt
 
                     refl_text = _first_3_lines(refl_text)
+                    useful = reflection_useful_heuristic(refl_text)
+                    useful_reflections += int(useful)
 
                 print("[RRR]  -> retrying", flush=True)
 
@@ -385,7 +472,12 @@ def run_rrr_eval(
                 retry_correct_loose += int(ok2_loose)
 
                 # Record reflection info (skipped vs generated)
-                rec["reflection"] = {"text": refl_text, "meta": meta_r}
+                rec["reflection"] = {
+                    "mode": reflection_mode,
+                    "text": refl_text,
+                    "useful_heuristic": useful,
+                    "meta": meta_r,
+                }
 
                 rec["retry"] = {
                     "solution": sol2,
@@ -399,7 +491,6 @@ def run_rrr_eval(
             f_out.write(json.dumps(rec, ensure_ascii=False) + "\n")
             n += 1
 
-
     print(f"Wrote {n} examples to {output_jsonl}")
     print(f"First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
     print(f"First-try accuracy (strict): {first_correct_strict}/{n} = {first_correct_strict/max(n,1):.3f}")
@@ -408,6 +499,9 @@ def run_rrr_eval(
         print(f"Retry success (strict| conditional): {retry_correct_strict}/{retries_attempted} = {retry_correct_strict/max(retries_attempted,1):.3f}")
         print(f"Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{n} = {(first_correct_loose+retry_correct_loose)/max(n,1):.3f}")
         print(f"Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{n} = {(first_correct_strict+retry_correct_strict)/max(n,1):.3f}")
+
+        if (not no_reflect) and (not retry_only):
+            print(f"Reflection usefulness rate (heuristic): {useful_reflections}/{retries_attempted} = {useful_reflections/max(retries_attempted,1):.3f}")
 
     print(f"Tokens used (total): {tokens_total}")
     print(f"Avg tokens / example: {tokens_total/max(n,1):.1f}")
