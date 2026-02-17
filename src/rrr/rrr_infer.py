@@ -335,6 +335,130 @@ def _checkpoint(f) -> None:
     os.fsync(f.fileno())
 
 
+# --------- NEW: Aggregate summary over an existing output jsonl ---------
+
+def summarize_existing_output(output_jsonl: str) -> dict:
+    """
+    Recompute aggregate stats from an existing RRR output jsonl.
+
+    - Keeps resume alignment: file may contain eval records + skipped/failed records.
+    - Aggregate accuracy denominators use ONLY valid eval examples.
+    """
+    if not os.path.exists(output_jsonl):
+        return {}
+
+    # counts over ALL lines (including skipped/failed)
+    num_total_lines = 0
+    num_skipped = 0
+    num_failed = 0
+
+    # counts over VALID eval examples only
+    n = 0
+    first_correct_loose = 0
+    first_correct_strict = 0
+    retry_correct_loose = 0
+    retry_correct_strict = 0
+    retries_attempted = 0
+    useful_reflections = 0
+
+    tokens_solve = 0
+    tokens_reflect = 0
+    tokens_retry = 0
+    tokens_total = 0
+
+    latency_total = 0.0
+    latency_solve = 0.0
+    latency_reflect = 0.0
+    latency_retry = 0.0
+
+    with open(output_jsonl, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            num_total_lines += 1
+
+            try:
+                rec = json.loads(line)
+            except Exception:
+                # treat unparsable lines as "failed-ish" for visibility
+                num_failed += 1
+                continue
+
+            status = rec.get("status")
+            if status == "skipped":
+                num_skipped += 1
+                continue
+            if status == "failed":
+                num_failed += 1
+                continue
+
+            # Otherwise: should be an eval record
+            first = rec.get("first") or {}
+            retry = rec.get("retry")  # may be None
+            refl = rec.get("reflection")  # may be None
+
+            n += 1
+            first_correct_loose += int(bool(first.get("correct_loose")))
+            first_correct_strict += int(bool(first.get("correct_strict")))
+
+            if retry is not None:
+                retries_attempted += 1
+                retry_correct_loose += int(bool(retry.get("correct_loose")))
+                retry_correct_strict += int(bool(retry.get("correct_strict")))
+
+                if isinstance(refl, dict):
+                    useful_reflections += int(bool(refl.get("useful_heuristic")))
+
+            m1 = first.get("meta") or {}
+            mr = (refl or {}).get("meta") if isinstance(refl, dict) else {}
+            m2 = (retry or {}).get("meta") if isinstance(retry, dict) else {}
+
+            t1 = int(m1.get("total_tokens", 0) or 0)
+            tr = int((mr or {}).get("total_tokens", 0) or 0)
+            t2 = int((m2 or {}).get("total_tokens", 0) or 0)
+
+            l1 = float(m1.get("latency_s", 0.0) or 0.0)
+            lr = float((mr or {}).get("latency_s", 0.0) or 0.0)
+            l2 = float((m2 or {}).get("latency_s", 0.0) or 0.0)
+
+            tokens_solve += t1
+            tokens_reflect += tr
+            tokens_retry += t2
+            tokens_total += (t1 + tr + t2)
+
+            latency_solve += l1
+            latency_reflect += lr
+            latency_retry += l2
+            latency_total += (l1 + lr + l2)
+
+    return {
+        # file-level bookkeeping
+        "num_total_lines": num_total_lines,
+        "num_skipped": num_skipped,
+        "num_failed": num_failed,
+
+        # eval-level aggregates
+        "n": n,
+        "first_correct_loose": first_correct_loose,
+        "first_correct_strict": first_correct_strict,
+        "retry_correct_loose": retry_correct_loose,
+        "retry_correct_strict": retry_correct_strict,
+        "retries_attempted": retries_attempted,
+        "useful_reflections": useful_reflections,
+        "tokens_solve": tokens_solve,
+        "tokens_reflect": tokens_reflect,
+        "tokens_retry": tokens_retry,
+        "tokens_total": tokens_total,
+        "latency_total": latency_total,
+        "latency_solve": latency_solve,
+        "latency_reflect": latency_reflect,
+        "latency_retry": latency_retry,
+    }
+
+
+
 # --------- Main eval ---------
 
 def run_rrr_eval(
@@ -357,7 +481,7 @@ def run_rrr_eval(
 ):
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
-    # Stats for THIS invocation (not re-reading prior output)
+    # Stats for THIS invocation
     n = 0
     first_correct_loose = 0
     first_correct_strict = 0
@@ -382,10 +506,13 @@ def run_rrr_eval(
     if resume and os.path.exists(output_jsonl):
         done = _count_jsonl_lines(output_jsonl)
         out_mode = "a"
-        print(f"[RRR] resume enabled: {output_jsonl} already has {done} lines; skipping first {done} inputs and appending.", flush=True)
+        print(
+            f"[RRR] resume enabled: {output_jsonl} already has {done} lines; "
+            f"skipping first {done} inputs and appending.",
+            flush=True
+        )
 
-    # For nicer progress printing: know total we *intend* to process this run
-    # (This is approximate if resuming + skipping malformed lines, but good enough for progress.)
+    # For progress printing: total remaining examples we *intend* to process
     if limit is None:
         with open(input_jsonl, "r", encoding="utf-8") as f_tmp:
             total_in_file = sum(1 for _ in f_tmp)
@@ -397,11 +524,9 @@ def run_rrr_eval(
         written_since_start = 0
 
         for i, line in enumerate(f_in):
-            # Skip examples already present in output when resuming
             if i < done:
                 continue
 
-            # Respect limit relative to input index (matches old behavior when not resuming)
             if limit is not None and i >= limit:
                 break
 
@@ -432,12 +557,10 @@ def run_rrr_eval(
                     # 1) Solve (seeded)
                     sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
 
-                    # tokens
                     t = int(meta1.get("total_tokens", 0))
                     tokens_solve += t
                     tokens_total += t
 
-                    # latency
                     lt = float(meta1.get("latency_s", 0.0))
                     latency_solve += lt
                     latency_total += lt
@@ -476,13 +599,11 @@ def run_rrr_eval(
                         retries_attempted += 1
 
                         if retry_only:
-                            # --- RETRY-ONLY: no reflection generation ---
                             print("[RRR]  -> wrong (loose), retry-only (no reflection)", flush=True)
                             refl_text = ""
                             useful = False
                             meta_r = {"skipped": True, "total_tokens": 0, "latency_s": 0.0}
                         else:
-                            # --- NORMAL: generate reflection (mode-controlled) ---
                             print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
 
                             refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
@@ -492,12 +613,10 @@ def run_rrr_eval(
                                 seed=seed + i + 10_000,
                             )
 
-                            # tokens
                             t = int(meta_r.get("total_tokens", 0))
                             tokens_reflect += t
                             tokens_total += t
 
-                            # latency
                             lt = float(meta_r.get("latency_s", 0.0))
                             latency_reflect += lt
                             latency_total += lt
@@ -514,12 +633,10 @@ def run_rrr_eval(
                             seed=seed + i + 20_000,
                         )
 
-                        # tokens
                         t = int(meta2.get("total_tokens", 0))
                         tokens_retry += t
                         tokens_total += t
 
-                        # latency
                         lt = float(meta2.get("latency_s", 0.0))
                         latency_retry += lt
                         latency_total += lt
@@ -534,7 +651,6 @@ def run_rrr_eval(
                         retry_correct_strict += int(ok2_strict)
                         retry_correct_loose += int(ok2_loose)
 
-                        # Record reflection info (skipped vs generated)
                         rec["reflection"] = {
                             "mode": reflection_mode,
                             "text": refl_text,
@@ -554,7 +670,7 @@ def run_rrr_eval(
                     _append_jsonl(f_out, rec)
                     n += 1
                     written_since_start += 1
-                    break  # success for this example
+                    break
 
                 except Exception as e:
                     attempt += 1
@@ -574,29 +690,59 @@ def run_rrr_eval(
                     print(f"[RRR][warn] input_idx={i} attempt={attempt} error={e} -> retrying in {sleep_s:.1f}s", flush=True)
                     time.sleep(sleep_s)
 
-            # checkpointing (based on records written, not input idx)
             if checkpoint_every and checkpoint_every > 0 and (written_since_start % checkpoint_every == 0):
                 _checkpoint(f_out)
 
-        # final checkpoint
         _checkpoint(f_out)
 
-    print(f"Wrote {n} examples to {output_jsonl}")
-    print(f"First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
-    print(f"First-try accuracy (strict): {first_correct_strict}/{n} = {first_correct_strict/max(n,1):.3f}")
+    # ---- Print BOTH invocation stats and aggregate stats ----
+    print(f"Wrote {n} new records in this invocation to {output_jsonl}")
+    print(f"(Invocation) First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
+    print(f"(Invocation) First-try accuracy (strict): {first_correct_strict}/{n} = {first_correct_strict/max(n,1):.3f}")
     if retries_attempted:
-        print(f"Retry success (loose | conditional):  {retry_correct_loose}/{retries_attempted} = {retry_correct_loose/max(retries_attempted,1):.3f}")
-        print(f"Retry success (strict| conditional): {retry_correct_strict}/{retries_attempted} = {retry_correct_strict/max(retries_attempted,1):.3f}")
-        print(f"Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{n} = {(first_correct_loose+retry_correct_loose)/max(n,1):.3f}")
-        print(f"Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{n} = {(first_correct_strict+retry_correct_strict)/max(n,1):.3f}")
+        print(f"(Invocation) Retry success (loose | conditional):  {retry_correct_loose}/{retries_attempted} = {retry_correct_loose/max(retries_attempted,1):.3f}")
+        print(f"(Invocation) Retry success (strict| conditional): {retry_correct_strict}/{retries_attempted} = {retry_correct_strict/max(retries_attempted,1):.3f}")
+        print(f"(Invocation) Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{n} = {(first_correct_loose+retry_correct_loose)/max(n,1):.3f}")
+        print(f"(Invocation) Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{n} = {(first_correct_strict+retry_correct_strict)/max(n,1):.3f}")
 
         if (not no_reflect) and (not retry_only):
-            print(f"Reflection usefulness rate (heuristic): {useful_reflections}/{retries_attempted} = {useful_reflections/max(retries_attempted,1):.3f}")
+            print(f"(Invocation) Reflection usefulness rate (heuristic): {useful_reflections}/{retries_attempted} = {useful_reflections/max(retries_attempted,1):.3f}")
 
-    print(f"Tokens used (total): {tokens_total}")
-    print(f"Avg tokens / example: {tokens_total/max(n,1):.1f}")
-    print(f"Tokens by stage: solve={tokens_solve}, reflect={tokens_reflect}, retry={tokens_retry}")
+    print(f"(Invocation) Tokens used (total): {tokens_total}")
+    print(f"(Invocation) Avg tokens / example: {tokens_total/max(n,1):.1f}")
+    print(f"(Invocation) Tokens by stage: solve={tokens_solve}, reflect={tokens_reflect}, retry={tokens_retry}")
+    print(f"(Invocation) Total latency (s): {latency_total:.2f}")
+    print(f"(Invocation) Avg latency / example (s): {latency_total/max(n,1):.3f}")
+    print(f"(Invocation) Latency by stage: solve={latency_solve:.2f}, reflect={latency_reflect:.2f}, retry={latency_retry:.2f}")
 
-    print(f"Total latency (s): {latency_total:.2f}")
-    print(f"Avg latency / example (s): {latency_total/max(n,1):.3f}")
-    print(f"Latency by stage: solve={latency_solve:.2f}, reflect={latency_reflect:.2f}, retry={latency_retry:.2f}")
+    # Aggregate summary over full file (so rerun prints real totals)
+    agg = summarize_existing_output(output_jsonl) if resume else {}
+    if agg:
+        print("\n[RRR] Aggregate summary from file:")
+        print(f"Total lines in file: {agg.get('num_total_lines', 0)}")
+        print(f"Skipped records:     {agg.get('num_skipped', 0)}")
+        print(f"Failed records:      {agg.get('num_failed', 0)}")
+
+        N = agg.get("n", 0)
+        if N <= 0:
+            print("No valid eval records found (only skipped/failed).")
+        else:
+            print(f"Valid eval examples: {N}")
+            print(f"First-try accuracy (loose):  {agg['first_correct_loose']}/{N} = {agg['first_correct_loose']/max(N,1):.3f}")
+            print(f"First-try accuracy (strict): {agg['first_correct_strict']}/{N} = {agg['first_correct_strict']/max(N,1):.3f}")
+
+            if agg["retries_attempted"]:
+                ra = agg["retries_attempted"]
+                print(f"Retry success (loose | conditional):  {agg['retry_correct_loose']}/{ra} = {agg['retry_correct_loose']/max(ra,1):.3f}")
+                print(f"Retry success (strict| conditional): {agg['retry_correct_strict']}/{ra} = {agg['retry_correct_strict']/max(ra,1):.3f}")
+                print(f"Overall accuracy (loose):  {(agg['first_correct_loose']+agg['retry_correct_loose'])}/{N} = {(agg['first_correct_loose']+agg['retry_correct_loose'])/max(N,1):.3f}")
+                print(f"Overall accuracy (strict): {(agg['first_correct_strict']+agg['retry_correct_strict'])}/{N} = {(agg['first_correct_strict']+agg['retry_correct_strict'])/max(N,1):.3f}")
+                print(f"Reflection usefulness rate (heuristic): {agg['useful_reflections']}/{ra} = {agg['useful_reflections']/max(ra,1):.3f}")
+
+            print(f"Tokens used (total): {agg['tokens_total']}")
+            print(f"Avg tokens / example: {agg['tokens_total']/max(N,1):.1f}")
+            print(f"Tokens by stage: solve={agg['tokens_solve']}, reflect={agg['tokens_reflect']}, retry={agg['tokens_retry']}")
+            print(f"Total latency (s): {agg['latency_total']:.2f}")
+            print(f"Avg latency / example (s): {agg['latency_total']/max(N,1):.3f}")
+            print(f"Latency by stage: solve={agg['latency_solve']:.2f}, reflect={agg['latency_reflect']:.2f}, retry={agg['latency_retry']:.2f}")
+
