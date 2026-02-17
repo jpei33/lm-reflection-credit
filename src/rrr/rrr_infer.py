@@ -2,6 +2,7 @@ import os
 import json
 from typing import Optional
 import re
+import time
 
 from src.utils.answer_parser import (
     extract_final_answer_strict,
@@ -13,6 +14,7 @@ from src.utils.generator import GenConfig, Generator
 # --------- Helpers for MATH / normalization ---------
 
 _BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
+
 
 def extract_last_boxed_balanced(text: str) -> Optional[str]:
     """
@@ -37,7 +39,7 @@ def extract_last_boxed_balanced(text: str) -> Optional[str]:
 
     if depth != 0:
         return None
-    return text[start : i - 1].strip()
+    return text[start: i - 1].strip()
 
 
 def extract_math_final(text: str) -> Optional[str]:
@@ -157,6 +159,7 @@ def loose_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
     if dataset == "math":
         return math_strict_equal(pred, gt)
     return normalize_answer(pred) == normalize_answer(gt)
+
 
 # --------- Prompts ---------
 
@@ -305,34 +308,62 @@ _REFLECT_KEYWORDS = [
     "plug", "plug in", "compute again", "arithmetic", "algebra"
 ]
 
+
 def reflection_useful_heuristic(reflection_text: str) -> bool:
     t = (reflection_text or "").lower()
     return any(k in t for k in _REFLECT_KEYWORDS)
 
+
+# --------- Robustness helpers ---------
+
+def _count_jsonl_lines(path: str) -> int:
+    if not os.path.exists(path):
+        return 0
+    n = 0
+    with open(path, "r", encoding="utf-8") as f:
+        for _ in f:
+            n += 1
+    return n
+
+
+def _append_jsonl(f, obj: dict) -> None:
+    f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+def _checkpoint(f) -> None:
+    f.flush()
+    os.fsync(f.fileno())
+
+
 # --------- Main eval ---------
 
 def run_rrr_eval(
-    gen: Generator,
+    gen,
     input_jsonl: str,
     output_jsonl: str,
-    limit: int = 50,
-    solve_cfg: GenConfig = GenConfig(max_new_tokens=256, temperature=0.7, top_p=0.95),
-    reflect_cfg: GenConfig = GenConfig(max_new_tokens=128, temperature=0.3, top_p=0.9),
-    retry_cfg: GenConfig = GenConfig(max_new_tokens=256, temperature=0.7, top_p=0.95),
+    limit: int = None,
+    solve_cfg=None,
+    reflect_cfg=None,
+    retry_cfg=None,
     no_reflect: bool = False,
     retry_only: bool = False,
     seed: int = 0,
     reflection_mode: str = "full",
+    # NEW robustness knobs:
+    resume: bool = False,
+    checkpoint_every: int = 10,
+    max_example_retries: int = 3,
+    retry_backoff_sec: float = 2.0,
 ):
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
+    # Stats for THIS invocation (not re-reading prior output)
     n = 0
     first_correct_loose = 0
     first_correct_strict = 0
     retry_correct_loose = 0
     retry_correct_strict = 0
     retries_attempted = 0
-
     useful_reflections = 0
 
     tokens_solve = 0
@@ -345,151 +376,210 @@ def run_rrr_eval(
     latency_reflect = 0.0
     latency_retry = 0.0
 
-    # For nicer progress printing: know how many examples we'll run
+    # Determine resume offset (number of already-written records)
+    done = 0
+    out_mode = "w"
+    if resume and os.path.exists(output_jsonl):
+        done = _count_jsonl_lines(output_jsonl)
+        out_mode = "a"
+        print(f"[RRR] resume enabled: {output_jsonl} already has {done} lines; skipping first {done} inputs and appending.", flush=True)
+
+    # For nicer progress printing: know total we *intend* to process this run
+    # (This is approximate if resuming + skipping malformed lines, but good enough for progress.)
     if limit is None:
         with open(input_jsonl, "r", encoding="utf-8") as f_tmp:
-            total_examples = sum(1 for _ in f_tmp)
+            total_in_file = sum(1 for _ in f_tmp)
+        total_examples = max(0, total_in_file - done)
     else:
-        total_examples = limit
+        total_examples = max(0, limit - done)
 
-    with open(input_jsonl, "r", encoding="utf-8") as f_in, open(output_jsonl, "w", encoding="utf-8") as f_out:
+    with open(input_jsonl, "r", encoding="utf-8") as f_in, open(output_jsonl, out_mode, encoding="utf-8") as f_out:
+        written_since_start = 0
+
         for i, line in enumerate(f_in):
+            # Skip examples already present in output when resuming
+            if i < done:
+                continue
+
+            # Respect limit relative to input index (matches old behavior when not resuming)
             if limit is not None and i >= limit:
                 break
 
-            ex = json.loads(line)
-            dataset = ex.get("dataset", "")
-            q = ex.get("question", "")
-            gt_final = parse_gt_final(ex)
+            attempt = 0
+            while True:
+                try:
+                    ex = json.loads(line)
+                    dataset = ex.get("dataset", "")
+                    q = ex.get("question", "")
+                    gt_final = parse_gt_final(ex)
 
-            if not q or gt_final is None:
-                continue
+                    # If malformed, write a skip record so resume stays aligned
+                    if not q or gt_final is None:
+                        rec = {
+                            "idx": i,
+                            "status": "skipped",
+                            "reason": "missing_question_or_gt",
+                            "dataset": ex.get("dataset"),
+                            "meta": ex.get("meta", {}),
+                        }
+                        _append_jsonl(f_out, rec)
+                        n += 1
+                        written_since_start += 1
+                        break
 
-            print(f"[RRR] Example {n+1}/{total_examples}", flush=True)
+                    print(f"[RRR] Example {n+1}/{max(total_examples,1)} (input_idx={i})", flush=True)
 
-            # 1) Solve (seeded)
-            sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
-
-            # tokens
-            t = int(meta1.get("total_tokens", 0))
-            tokens_solve += t
-            tokens_total += t
-
-            # latency
-            lt = float(meta1.get("latency_s", 0.0))
-            latency_solve += lt
-            latency_total += lt
-
-            p1 = parse_pred_final(sol1)
-            pred1_strict = p1["strict"]
-            pred1_loose = p1["loose"]
-
-            ok1_strict = strict_match(ex, pred1_strict, gt_final)
-            ok1_loose = loose_match(ex, pred1_loose, gt_final)
-
-            first_correct_strict += int(ok1_strict)
-            first_correct_loose += int(ok1_loose)
-
-            rec = {
-                "question": q,
-                "dataset": ex.get("dataset"),
-                "meta": ex.get("meta", {}),
-                "gt_final": gt_final,
-                "seed": seed,
-                "first": {
-                    "solution": sol1,
-                    "pred_final_strict": pred1_strict,
-                    "pred_final_loose": pred1_loose,
-                    "correct_strict": ok1_strict,
-                    "correct_loose": ok1_loose,
-                    "meta": meta1,
-                },
-                "reflection": None,
-                "retry": None,
-            }
-
-            # Reflect + retry based on LOOSE correctness
-            if (not ok1_loose) and (not no_reflect):
-                retries_attempted += 1
-
-                if retry_only:
-                    # --- RETRY-ONLY: no reflection generation ---
-                    print("[RRR]  -> wrong (loose), retry-only (no reflection)", flush=True)
-                    refl_text = ""
-                    useful = False
-                    meta_r = {"skipped": True, "total_tokens": 0, "latency_s": 0.0}
-                else:
-                    # --- NORMAL: generate reflection (mode-controlled) ---
-                    print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
-
-                    refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
-                    refl_text, meta_r = gen.generate(
-                        refl_prompt,
-                        reflect_cfg,
-                        seed=seed + i + 10_000,
-                    )
+                    # 1) Solve (seeded)
+                    sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
 
                     # tokens
-                    t = int(meta_r.get("total_tokens", 0))
-                    tokens_reflect += t
+                    t = int(meta1.get("total_tokens", 0))
+                    tokens_solve += t
                     tokens_total += t
 
                     # latency
-                    lt = float(meta_r.get("latency_s", 0.0))
-                    latency_reflect += lt
+                    lt = float(meta1.get("latency_s", 0.0))
+                    latency_solve += lt
                     latency_total += lt
 
-                    refl_text = _first_3_lines(refl_text)
-                    useful = reflection_useful_heuristic(refl_text)
-                    useful_reflections += int(useful)
+                    p1 = parse_pred_final(sol1)
+                    pred1_strict = p1["strict"]
+                    pred1_loose = p1["loose"]
 
-                print("[RRR]  -> retrying", flush=True)
+                    ok1_strict = strict_match(ex, pred1_strict, gt_final)
+                    ok1_loose = loose_match(ex, pred1_loose, gt_final)
 
-                sol2, meta2 = gen.generate(
-                    build_retry_prompt(q, refl_text, dataset),
-                    retry_cfg,
-                    seed=seed + i + 20_000,
-                )
+                    first_correct_strict += int(ok1_strict)
+                    first_correct_loose += int(ok1_loose)
 
-                # tokens
-                t = int(meta2.get("total_tokens", 0))
-                tokens_retry += t
-                tokens_total += t
+                    rec = {
+                        "idx": i,
+                        "question": q,
+                        "dataset": ex.get("dataset"),
+                        "meta": ex.get("meta", {}),
+                        "gt_final": gt_final,
+                        "seed": seed,
+                        "first": {
+                            "solution": sol1,
+                            "pred_final_strict": pred1_strict,
+                            "pred_final_loose": pred1_loose,
+                            "correct_strict": ok1_strict,
+                            "correct_loose": ok1_loose,
+                            "meta": meta1,
+                        },
+                        "reflection": None,
+                        "retry": None,
+                    }
 
-                # latency
-                lt = float(meta2.get("latency_s", 0.0))
-                latency_retry += lt
-                latency_total += lt
+                    # Reflect + retry based on LOOSE correctness
+                    if (not ok1_loose) and (not no_reflect):
+                        retries_attempted += 1
 
-                p2 = parse_pred_final(sol2)
-                pred2_strict = p2["strict"]
-                pred2_loose = p2["loose"]
+                        if retry_only:
+                            # --- RETRY-ONLY: no reflection generation ---
+                            print("[RRR]  -> wrong (loose), retry-only (no reflection)", flush=True)
+                            refl_text = ""
+                            useful = False
+                            meta_r = {"skipped": True, "total_tokens": 0, "latency_s": 0.0}
+                        else:
+                            # --- NORMAL: generate reflection (mode-controlled) ---
+                            print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
 
-                ok2_strict = strict_match(ex, pred2_strict, gt_final)
-                ok2_loose = loose_match(ex, pred2_loose, gt_final)
+                            refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
+                            refl_text, meta_r = gen.generate(
+                                refl_prompt,
+                                reflect_cfg,
+                                seed=seed + i + 10_000,
+                            )
 
-                retry_correct_strict += int(ok2_strict)
-                retry_correct_loose += int(ok2_loose)
+                            # tokens
+                            t = int(meta_r.get("total_tokens", 0))
+                            tokens_reflect += t
+                            tokens_total += t
 
-                # Record reflection info (skipped vs generated)
-                rec["reflection"] = {
-                    "mode": reflection_mode,
-                    "text": refl_text,
-                    "useful_heuristic": useful,
-                    "meta": meta_r,
-                }
+                            # latency
+                            lt = float(meta_r.get("latency_s", 0.0))
+                            latency_reflect += lt
+                            latency_total += lt
 
-                rec["retry"] = {
-                    "solution": sol2,
-                    "pred_final_strict": pred2_strict,
-                    "pred_final_loose": pred2_loose,
-                    "correct_strict": ok2_strict,
-                    "correct_loose": ok2_loose,
-                    "meta": meta2,
-                }
+                            refl_text = _first_3_lines(refl_text)
+                            useful = reflection_useful_heuristic(refl_text)
+                            useful_reflections += int(useful)
 
-            f_out.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            n += 1
+                        print("[RRR]  -> retrying", flush=True)
+
+                        sol2, meta2 = gen.generate(
+                            build_retry_prompt(q, refl_text, dataset),
+                            retry_cfg,
+                            seed=seed + i + 20_000,
+                        )
+
+                        # tokens
+                        t = int(meta2.get("total_tokens", 0))
+                        tokens_retry += t
+                        tokens_total += t
+
+                        # latency
+                        lt = float(meta2.get("latency_s", 0.0))
+                        latency_retry += lt
+                        latency_total += lt
+
+                        p2 = parse_pred_final(sol2)
+                        pred2_strict = p2["strict"]
+                        pred2_loose = p2["loose"]
+
+                        ok2_strict = strict_match(ex, pred2_strict, gt_final)
+                        ok2_loose = loose_match(ex, pred2_loose, gt_final)
+
+                        retry_correct_strict += int(ok2_strict)
+                        retry_correct_loose += int(ok2_loose)
+
+                        # Record reflection info (skipped vs generated)
+                        rec["reflection"] = {
+                            "mode": reflection_mode,
+                            "text": refl_text,
+                            "useful_heuristic": useful,
+                            "meta": meta_r,
+                        }
+
+                        rec["retry"] = {
+                            "solution": sol2,
+                            "pred_final_strict": pred2_strict,
+                            "pred_final_loose": pred2_loose,
+                            "correct_strict": ok2_strict,
+                            "correct_loose": ok2_loose,
+                            "meta": meta2,
+                        }
+
+                    _append_jsonl(f_out, rec)
+                    n += 1
+                    written_since_start += 1
+                    break  # success for this example
+
+                except Exception as e:
+                    attempt += 1
+                    if attempt > max_example_retries:
+                        fail = {
+                            "idx": i,
+                            "status": "failed",
+                            "error": repr(e),
+                        }
+                        _append_jsonl(f_out, fail)
+                        n += 1
+                        written_since_start += 1
+                        print(f"[RRR][error] input_idx={i} failed permanently after {attempt-1} retries: {e}", flush=True)
+                        break
+
+                    sleep_s = retry_backoff_sec * (2 ** (attempt - 1))
+                    print(f"[RRR][warn] input_idx={i} attempt={attempt} error={e} -> retrying in {sleep_s:.1f}s", flush=True)
+                    time.sleep(sleep_s)
+
+            # checkpointing (based on records written, not input idx)
+            if checkpoint_every and checkpoint_every > 0 and (written_since_start % checkpoint_every == 0):
+                _checkpoint(f_out)
+
+        # final checkpoint
+        _checkpoint(f_out)
 
     print(f"Wrote {n} examples to {output_jsonl}")
     print(f"First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
