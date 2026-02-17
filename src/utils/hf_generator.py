@@ -24,19 +24,42 @@ class HFGenerator:
 
         self.model.eval()
 
-    def generate(self, prompt: str, cfg: GenConfig, seed: int = 0):
-        inputs = self.tokenizer(prompt, return_tensors="pt")
+    def generate(self, prompt, cfg: GenConfig, seed: int = 0):
+        """
+        prompt: str OR List[str]
+        returns:
+        - if str: (text, meta)
+        - if list: (texts, metas)
+        """
+        is_batched = isinstance(prompt, (list, tuple))
+        prompts = list(prompt) if is_batched else [prompt]
+
+        # Tokenize with padding so we can batch
+        inputs = self.tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=False,
+            return_attention_mask=True,
+        )
 
         if self.torch.cuda.is_available():
             inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
 
-        # Deterministic sampling across runs (works even if transformers doesn't support generator=)
+        # Deterministic sampling
         random.seed(seed)
         self.torch.manual_seed(seed)
         if self.torch.cuda.is_available():
             self.torch.cuda.manual_seed_all(seed)
 
-        input_len = inputs["input_ids"].shape[1]
+        # Per-example true prompt lengths (number of non-pad tokens)
+        # attention_mask is 1 for real tokens, 0 for padding
+        attn = inputs.get("attention_mask", None)
+        if attn is None:
+            # fallback (shouldn't happen if return_attention_mask=True)
+            prompt_lens = [inputs["input_ids"].shape[1]] * len(prompts)
+        else:
+            prompt_lens = attn.sum(dim=1).tolist()  # list of ints
 
         t0 = time.time()
         with self.torch.no_grad():
@@ -51,21 +74,32 @@ class HFGenerator:
             )
         dt = time.time() - t0
 
-        # decode ONLY new tokens
-        gen_ids = out[0, input_len:]
-        text = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        # Decode per example: slice off its prompt tokens
+        texts = []
+        metas = []
 
-        prompt_tokens = int(input_len)
-        generated_tokens = int(gen_ids.shape[0])
-        total_tokens = prompt_tokens + generated_tokens
+        # out shape: (B, T_out)
+        for i in range(out.shape[0]):
+            input_len_i = int(prompt_lens[i])
+            gen_ids = out[i, input_len_i:]
+            text = self.tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
 
-        meta = {
-            "latency_s": dt,
-            "model_name": self.model_name,
-            "backend": "hf",
-            "seed": seed,
-            "prompt_tokens": prompt_tokens,
-            "generated_tokens": generated_tokens,
-            "total_tokens": total_tokens,
-        }
-        return text, meta
+            prompt_tokens = input_len_i
+            generated_tokens = int(gen_ids.shape[0])
+            total_tokens = prompt_tokens + generated_tokens
+
+            meta = {
+                "latency_s": dt / max(len(prompts), 1),  # per-example approx
+                "batch_latency_s": dt,                   # full batch time
+                "batch_size": len(prompts),
+                "model_name": self.model_name,
+                "backend": "hf",
+                "seed": seed,
+                "prompt_tokens": prompt_tokens,
+                "generated_tokens": generated_tokens,
+                "total_tokens": total_tokens,
+            }
+            texts.append(text)
+            metas.append(meta)
+
+        return (texts, metas) if is_batched else (texts[0], metas[0])

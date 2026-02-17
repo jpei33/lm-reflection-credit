@@ -1,7 +1,40 @@
 import re
+from fractions import Fraction
+from decimal import Decimal, InvalidOperation
 
-# Matches integers, decimals, and simple fractions like 5/6
-_NUM_RE = re.compile(r"-?\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)?")
+# ----------------------------
+# Shared numeric token patterns
+# ----------------------------
+
+# One "number token" that supports:
+#  - integers: 12
+#  - decimals: -3.5
+#  - simple fractions: 5/6, -1/2, 3.0/4, 3/4.0
+_NUM_TOKEN = r"[-+]?\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)?"
+
+# Find number tokens anywhere
+_NUM_RE = re.compile(_NUM_TOKEN)
+
+# STRICT marker line: #### <number> (optional $)
+_HASH_STRICT_RE = re.compile(rf"####\s*\$?\s*({_NUM_TOKEN})")
+
+# LOOSE: any #### line
+_HASH_LINE_RE = re.compile(r"####\s*([^\n\r]+)")
+
+# LOOSE: boxed
+_BOXED_RE = re.compile(r"\\boxed\s*\{(.+?)\}", re.DOTALL)
+
+_TEX_DOLLAR_RE = re.compile(r"^\s*\$\s*(.*?)\s*\$\s*$", re.DOTALL)
+_TEX_PAREN_RE = re.compile(r"^\s*\\\(\s*(.*?)\s*\\\)\s*$", re.DOTALL)
+_TEX_BRACKET_RE = re.compile(r"^\s*\\\[\s*(.*?)\s*\\\]\s*$", re.DOTALL)
+_LEFT_RIGHT_RE = re.compile(r"\\left|\\right")
+_FRAC_RE = re.compile(r"\\frac\s*\{\s*([^{}]+?)\s*\}\s*\{\s*([^{}]+?)\s*\}")
+_SPACES_RE = re.compile(r"\s+")
+_UNICODE_MINUS = "\u2212"
+
+# numeric forms after normalization
+_NUMERIC_RE = re.compile(r"^[\+\-]?\d+(\.\d+)?$")
+_FRACTION_RE = re.compile(r"^[\+\-]?\d+\s*/\s*[\+\-]?\d+$")
 
 
 def extract_final_answer_strict(text: str):
@@ -14,26 +47,29 @@ def extract_final_answer_strict(text: str):
     if not text:
         return None
 
-    matches = re.findall(
-        r"####\s*\$?\s*([-+]?\d+(?:\.\d+)?(?:/\d+(?:\.\d+)?)?)",
-        text,
-    )
+    matches = _HASH_STRICT_RE.findall(text)
     return matches[-1].strip() if matches else None
 
 
 def extract_final_answer_loose(text: str):
     """
     LOOSE:
-    - #### <anything with a number>
+    - #### <number> (prefer the same capture as strict; keep last)
+    - #### <anything with a number> (fallback within #### line)
     - \\boxed{<number>}
     - fallback: last number anywhere
     """
     if not text:
         return None
 
-    # 1) #### line (keep last valid)
+    # 1) Prefer strict-style #### <number> capture (this prevents "1" vs "1/2" issues)
+    matches = _HASH_STRICT_RE.findall(text)
+    if matches:
+        return matches[-1].strip()
+
+    # 1b) Otherwise: scan #### lines and extract the last numeric token inside them
     last = None
-    for m in re.finditer(r"####\s*([^\n\r]+)", text):
+    for m in _HASH_LINE_RE.finditer(text):
         s = m.group(1)
         m2 = _NUM_RE.search(s)
         if m2:
@@ -42,7 +78,7 @@ def extract_final_answer_loose(text: str):
         return last
 
     # 2) boxed
-    m = re.search(r"\\boxed\{([^}]+)\}", text)
+    m = _BOXED_RE.search(text)
     if m:
         m2 = _NUM_RE.search(m.group(1))
         if m2:
@@ -51,22 +87,6 @@ def extract_final_answer_loose(text: str):
     # 3) fallback: last number anywhere
     nums = _NUM_RE.findall(text)
     return nums[-1].strip() if nums else None
-
-from fractions import Fraction
-from decimal import Decimal, InvalidOperation
-
-_BOXED_RE = re.compile(r"\\boxed\s*\{(.+?)\}", re.DOTALL)
-_TEX_DOLLAR_RE = re.compile(r"^\s*\$\s*(.*?)\s*\$\s*$", re.DOTALL)
-_TEX_PAREN_RE = re.compile(r"^\s*\\\(\s*(.*?)\s*\\\)\s*$", re.DOTALL)
-_TEX_BRACKET_RE = re.compile(r"^\s*\\\[\s*(.*?)\s*\\\]\s*$", re.DOTALL)
-_LEFT_RIGHT_RE = re.compile(r"\\left|\\right")
-_FRAC_RE = re.compile(r"\\frac\s*\{\s*([^{}]+?)\s*\}\s*\{\s*([^{}]+?)\s*\}")
-_SPACES_RE = re.compile(r"\s+")
-_UNICODE_MINUS = "\u2212"
-
-# numeric forms after normalization
-_NUMERIC_RE = re.compile(r"^[\+\-]?\d+(\.\d+)?$")
-_FRACTION_RE = re.compile(r"^[\+\-]?\d+\s*/\s*[\+\-]?\d+$")
 
 
 def normalize_math_answer(s: str) -> str:
@@ -124,7 +144,11 @@ def try_parse_number(s: str):
             break
 
     # Convert (a)/(b) -> a/b if exactly that pattern
-    s = re.sub(r"^\(\s*([^\(\)]+?)\s*\)\s*/\s*\(\s*([^\(\)]+?)\s*\)$", r"\1/\2", s)
+    s = re.sub(
+        r"^\(\s*([^\(\)]+?)\s*\)\s*/\s*\(\s*([^\(\)]+?)\s*\)$",
+        r"\1/\2",
+        s,
+    )
 
     if _NUMERIC_RE.match(s):
         try:
@@ -154,12 +178,13 @@ def math_strict_equal(pred_raw: str, gold_raw: str) -> bool:
 
     return pred == gold
 
+
 def extract_math_final(text: str):
     """
     Extract final answer for MATH-style outputs.
     Priority:
       1) \boxed{...} (keep inside, not just a number)
-      2) last line that looks like an answer-ish (fallback)
+      2) last non-empty line (fallback)
     """
     if not text:
         return None
@@ -168,9 +193,5 @@ def extract_math_final(text: str):
     if m:
         return m.group(1).strip()
 
-    # fallback: try last "reasonable" token chunk
-    # (keep it conservative)
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     return lines[-1] if lines else None
-
-
