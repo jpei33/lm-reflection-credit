@@ -24,7 +24,7 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 ## Results
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
-## Results
+## Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
 
 We evaluate four inference strategies — **baseline**, **retry-only**, **reflection-full**, **reflection-plan**, and **reflection-tail** — on two reasoning benchmarks:
 
