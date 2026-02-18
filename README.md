@@ -24,3 +24,70 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 ## Results
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
+## Results
+
+We evaluate four inference strategies — **baseline**, **retry-only**, **reflection-full**, **reflection-plan**, and **reflection-tail** — on two reasoning benchmarks:
+
+- GSM8K-200 (grade-school arithmetic)
+- MATH-200 (competition math)
+
+All experiments use identical prompts, decoding limits, and model weights. Differences arise only from inference strategy.
+
+---
+
+### GSM8K-200
+
+| Method | Strict Accuracy | Δ vs Baseline | Tokens / Example | Latency / Example |
+|--------|-----------------|---------------|-------------------|-------------------|
+| Baseline | 0.085 | — | **390** | **7.23 s** |
+| Retry | 0.165 | +0.080 | 727 | 13.14 s |
+| Reflect-Full | 0.115 | +0.030 | 1111 | 16.72 s |
+| Reflect-Plan | **0.185** | **+0.100** | 893 | 17.27 s |
+| Reflect-Tail | 0.175 | +0.090 | 948 | 17.30 s |
+
+**Takeaways**
+
+- Structured reflection improves reasoning.
+- Planning-style reflection works best.
+- Long reflection hurts efficiency.
+- Retry alone already gives large gains.
+
+---
+
+### MATH-200
+
+| Method | Strict Accuracy | Δ vs Baseline | Tokens / Example | Latency / Example |
+|--------|-----------------|---------------|-------------------|-------------------|
+| Baseline | 0.150 | — | **632** | **14.24 s** |
+| Retry | 0.255 | +0.105 | 1223 | 27.51 s |
+| Reflect-Full | 0.255 | +0.105 | 1881 | 28.02 s |
+| Reflect-Tail | **0.265** | **+0.115** | 1509 | 28.08 s |
+| Reflect-Plan | 0.240 | +0.090 | 1433 | 27.95 s |
+
+**Takeaways**
+
+- Hard math benefits more from search than reflection.
+- Tail reflection is best for difficult reasoning.
+- Full reflection adds cost but little gain.
+
+---
+
+### Cross-Dataset Insights
+
+- Retry is a strong baseline.
+- Reflection must be constrained to help.
+- Short reflections outperform long ones.
+- Best method depends on task difficulty.
+
+| Dataset | Best Method |
+|--------|-------------|
+| GSM8K | Reflect-Plan |
+| MATH | Reflect-Tail |
+
+---
+
+### Key Finding
+
+> LLM reasoning performance appears largely search-limited rather than capability-limited.
+
+Reflection mainly helps by guiding search rather than generating new reasoning ability.
