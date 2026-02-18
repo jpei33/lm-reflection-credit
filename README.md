@@ -72,6 +72,15 @@ All experiments use identical prompts, decoding limits, and model weights. Diffe
 
 ---
 
+### Plots
+
+![Strict Accuracy](figures/acc_strict_by_method.png)
+![Tokens](figures/tokens_by_method.png)
+![Latency](figures/latency_by_method.png)
+![Tradeoff](figures/tradeoff_acc_vs_tokens.png)
+
+---
+
 ### Cross-Dataset Insights
 
 - Retry is a strong baseline.

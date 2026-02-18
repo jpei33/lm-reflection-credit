@@ -5,3 +5,5 @@ pandas
 wandb
 python-dotenv
 pyyaml
+matplotlib
+pandas
