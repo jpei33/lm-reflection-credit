@@ -74,10 +74,16 @@ All experiments use identical prompts, decoding limits, and model weights. Diffe
 
 ### Plots
 
-![Strict Accuracy](figures/acc_strict_by_method.png)
-![Tokens](figures/tokens_by_method.png)
-![Latency](figures/latency_by_method.png)
-![Tradeoff](figures/tradeoff_acc_vs_tokens.png)
+<p align="center">
+  <img src="figures/acc_strict_by_method.png" width="48%" />
+  <img src="figures/tokens_by_method.png" width="48%" />
+</p>
+
+<p align="center">
+  <img src="figures/latency_by_method.png" width="48%" />
+  <img src="figures/tradeoff_acc_vs_tokens.png" width="48%" />
+</p>
+
 
 ---
 
