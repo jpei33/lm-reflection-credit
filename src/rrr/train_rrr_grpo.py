@@ -1,0 +1,677 @@
+"""
+src/rrr/train_rrr_grpo.py
+==========================
+RRR Training with GRPO (Group Relative Policy Optimization)
+------------------------------------------------------------
+This is Phase 3 of the experiment: the full paper method.
+
+How GRPO-RRR differs from the current RFT-RRR (train_rrr.py)
+--------------------------------------------------------------
+  RFT-RRR (Phase 2):
+    - Sample 1 reflection per failed solve
+    - Only train on correct retries  (reward=1 → gradient ON, reward=0 → skip)
+    - Datum weight = 1.0 for target tokens
+    - Gradient step only when at least one correct retry exists
+
+  GRPO-RRR (Phase 3):
+    - Sample k=8 reflections per failed solve  (group)
+    - Train on ALL k samples, weighted by group-normalized advantage
+    - Datum weight = advantage = (r_i - mean(r_group)) / (std(r_group) + eps)
+      • Correct retry  → advantage > 0  → positive gradient (reinforce reflection)
+      • Wrong retry    → advantage < 0  → negative gradient (push away from reflection)
+    - Gradient step on almost every step (wrong retries contribute negative signal)
+    - Token mask: only reflect + retry tokens get nonzero weight (solve = context)
+
+Paper reference: "Reflect, Retry, Reward" (arXiv 2505.24726)
+  - Algorithm: GRPO (Shao et al. 2024)
+  - KL coef: 0.001 (we omit KL penalty here; Tinker API doesn't expose ref-policy
+    log-probs. Effect is minimal at this scale.)
+  - Training mask: gradient on reflection tokens only
+
+Note on negative weights
+------------------------
+This script passes negative float weights to Tinker's cross_entropy loss for
+wrong-retry datums.  The effective loss is:
+    L = -sum(w_i * log p(y_i|x))
+When w_i < 0, the gradient is positive, pushing log-prob DOWN for those tokens.
+This is mathematically equivalent to standard GRPO.  If Tinker raises an error
+on negative weights, set --clip_negative_advantages to clip advantages to [0, ∞)
+which falls back to RFT behaviour (only positive signal).
+
+Entry point: scripts/train_rrr_grpo.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import textwrap
+from pathlib import Path
+from typing import List, Optional
+
+from src.rrr.rrr_infer import (
+    build_reflection_prompt,
+    build_retry_prompt,
+    build_solve_prompt,
+    parse_gt_final,
+    parse_pred_final,
+    strict_match,
+)
+
+
+# ---------------------------------------------------------------------------
+# Tokenisation helpers
+# ---------------------------------------------------------------------------
+
+def _has_chat_template(tokenizer) -> bool:
+    return getattr(tokenizer, "chat_template", None) is not None
+
+
+def _to_ids(result) -> List[int]:
+    if hasattr(result, "input_ids"):
+        result = result.input_ids
+    elif isinstance(result, dict) and "input_ids" in result:
+        result = result["input_ids"]
+    if hasattr(result, "ids"):
+        return [int(x) for x in result.ids]
+    if hasattr(result, "tolist"):
+        return [int(x) for x in result.tolist()]
+    return [int(x) for x in result]
+
+
+# ---------------------------------------------------------------------------
+# Datum builder with GRPO advantage weighting
+# ---------------------------------------------------------------------------
+
+def _messages_to_datum_weighted(messages, tokenizer, max_seq_len: int, types,
+                                  advantage: float):
+    """
+    Build a Tinker cross-entropy Datum with per-token weight = advantage.
+
+    - Prompt tokens: weight 0.0  (context, never trained on)
+    - Completion tokens: weight = advantage  (can be negative for GRPO)
+
+    When advantage < 0 the loss pushes the model AWAY from those tokens,
+    implementing the negative signal for wrong reflections in GRPO.
+    """
+    last_asst = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if messages[i]["role"] == "assistant"),
+        None,
+    )
+    if last_asst is None:
+        raise ValueError("No assistant message found in conversation.")
+
+    prompt_msgs = messages[:last_asst]
+
+    if _has_chat_template(tokenizer):
+        prompt_ids = _to_ids(tokenizer.apply_chat_template(
+            prompt_msgs, tokenize=True, add_generation_prompt=True,
+            return_tensors=None,
+        ))
+        full_ids = _to_ids(tokenizer.apply_chat_template(
+            messages[:last_asst + 1], tokenize=True,
+            add_generation_prompt=False, return_tensors=None,
+        ))
+        completion_ids = full_ids[len(prompt_ids):]
+    else:
+        parts = [
+            f"### {m['role'].capitalize()}\n{m['content'].strip()}"
+            for m in prompt_msgs
+        ]
+        prompt_text    = "\n\n".join(parts) + ("\n\n" if parts else "") + "### Assistant\n"
+        prompt_ids     = _to_ids(tokenizer.encode(prompt_text, add_special_tokens=True))
+        completion_ids = _to_ids(tokenizer.encode(
+            messages[last_asst]["content"].strip(), add_special_tokens=False,
+        ))
+
+    if not completion_ids:
+        raise ValueError("Empty completion after tokenisation.")
+
+    max_completion = max_seq_len // 2
+    max_prompt     = max_seq_len - min(len(completion_ids), max_completion)
+    prompt_ids     = prompt_ids[-max_prompt:]
+    completion_ids = completion_ids[:max_completion]
+
+    P, C         = len(prompt_ids), len(completion_ids)
+    full         = prompt_ids + completion_ids
+    N            = P + C - 1
+    raw_weights  = [0.0] * P + [float(advantage)] * C
+    seq_weights  = raw_weights[1:]
+
+    return types.Datum(
+        model_input=types.ModelInput.from_ints(full[:-1]),
+        loss_fn_inputs={
+            "target_tokens": types.TensorData(data=full[1:],    dtype="int64",   shape=[N]),
+            "weights":       types.TensorData(data=seq_weights, dtype="float32", shape=[N]),
+        },
+    )
+
+
+def _build_grpo_rrr_datums(
+    question: str,
+    dataset: str,
+    solve_text: str,
+    reflect_text: str,
+    retry_text: str,
+    reflection_mode: str,
+    advantage: float,
+    tokenizer,
+    max_seq_len: int,
+    types,
+) -> List:
+    """
+    Build TWO GRPO-weighted Datums from one RRR trajectory (correct OR wrong).
+
+    Datum 1 – Reflection turn:  weight = advantage on reflect tokens
+    Datum 2 – Retry turn:       weight = advantage on retry tokens
+    Solve is always context (weight 0) in both datums.
+
+    For correct retries: advantage > 0  → reinforce reflect + retry
+    For wrong retries:   advantage < 0  → push away from reflect + retry
+    """
+    solve_prompt_str  = build_solve_prompt(question, dataset)
+    refl_request_str  = build_reflection_prompt(
+        reflection_mode, question, solve_text, pred_final=None
+    )
+    retry_request_str = build_retry_prompt(question, reflect_text, dataset)
+
+    msgs_reflect = [
+        {"role": "user",      "content": solve_prompt_str},
+        {"role": "assistant", "content": solve_text},
+        {"role": "user",      "content": refl_request_str},
+        {"role": "assistant", "content": reflect_text},
+    ]
+    msgs_retry = [
+        {"role": "user",      "content": solve_prompt_str},
+        {"role": "assistant", "content": solve_text},
+        {"role": "user",      "content": refl_request_str},
+        {"role": "assistant", "content": reflect_text},
+        {"role": "user",      "content": retry_request_str},
+        {"role": "assistant", "content": retry_text},
+    ]
+
+    datums = []
+    for msgs in (msgs_reflect, msgs_retry):
+        try:
+            datums.append(_messages_to_datum_weighted(
+                msgs, tokenizer, max_seq_len, types, advantage
+            ))
+        except Exception as exc:
+            print(f"  [rrr_grpo][warn] datum build skipped: {exc}")
+    return datums
+
+
+# ---------------------------------------------------------------------------
+# GRPO advantage computation
+# ---------------------------------------------------------------------------
+
+def _compute_advantages(rewards: List[float], eps: float = 1e-8) -> List[float]:
+    """
+    Group-normalise binary rewards to GRPO advantages.
+
+    If all rewards in the group are identical (all 0 or all 1), std=0 and
+    all advantages would be NaN.  In that case return zeros — no gradient
+    is applied, equivalent to skipping (same as current RFT behaviour for
+    all-correct or all-wrong groups).
+    """
+    import math
+    n = len(rewards)
+    if n == 0:
+        return []
+    mean = sum(rewards) / n
+    variance = sum((r - mean) ** 2 for r in rewards) / n
+    std = math.sqrt(variance)
+    if std < eps:
+        # All same reward — no relative signal
+        return [0.0] * n
+    return [(r - mean) / (std + eps) for r in rewards]
+
+
+# ---------------------------------------------------------------------------
+# Sampling helpers
+# ---------------------------------------------------------------------------
+
+def _make_prompt_ids(tokenizer, prompt: str) -> list:
+    try:
+        return _to_ids(tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True, add_generation_prompt=True, return_tensors=None,
+        ))
+    except Exception:
+        return _to_ids(tokenizer.encode(prompt, add_special_tokens=True))
+
+
+def _fire_sample(sampling_client, tokenizer, prompt, types, tinker,
+                 max_new_tokens, temperature, top_p, seed):
+    prompt_ids = _make_prompt_ids(tokenizer, prompt)
+    return sampling_client.sample(
+        prompt=types.ModelInput.from_ints(prompt_ids),
+        num_samples=1,
+        sampling_params=tinker.SamplingParams(
+            max_tokens=max_new_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            seed=seed,
+        ),
+    )
+
+
+def _decode_future(future, tokenizer) -> str:
+    res = future.result()
+    return tokenizer.decode(res.sequences[0].tokens, skip_special_tokens=True).strip()
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint helper
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(training_client, run_name: str, global_step, output_dir: str) -> str:
+    import json as _json
+    from pathlib import Path as _Path
+
+    ckpt_name  = run_name if global_step is None else f"{run_name}-step{global_step}"
+    print(f"[ckpt] saving '{ckpt_name}' ...")
+    save_resp  = training_client.save_state(ckpt_name).result()
+    tinker_uri = save_resp.path
+
+    ckpt_dir   = _Path(output_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    meta_path  = ckpt_dir / f"{ckpt_name}.checkpoint.json"
+    meta_path.write_text(
+        _json.dumps({"run_name": ckpt_name, "tinker_path": tinker_uri}, indent=2)
+    )
+    print(f"[ckpt] saved: {tinker_uri}  (metadata -> {meta_path})")
+    return tinker_uri
+
+
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def _load_problems(paths: List[str], limit: Optional[int] = None) -> List[dict]:
+    rows: List[dict] = []
+    for path in paths:
+        p = Path(path)
+        if not p.exists():
+            print(f"[rrr_grpo][warn] not found: {path}")
+            continue
+        with open(p, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+    if limit:
+        rows = rows[:limit]
+    print(f"[rrr_grpo] loaded {len(rows)} problems from {len(paths)} file(s).")
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Main training function
+# ---------------------------------------------------------------------------
+
+def train_rrr_grpo(
+    # ── Tinker / model ───────────────────────────────────────────────────────
+    base_model: str           = "Qwen/Qwen3-4B-Instruct-2507",
+    sft_checkpoint: str       = None,
+    run_name: str             = None,
+    rank: int                 = 8,
+    seed: int                 = 42,
+    # ── Data ─────────────────────────────────────────────────────────────────
+    train_jsonl_paths: List[str] = None,
+    data_limit: Optional[int]    = None,
+    # ── RL loop ──────────────────────────────────────────────────────────────
+    max_steps: int            = 200,
+    problems_per_step: int    = 4,          # problems per gradient step
+    grpo_k: int               = 8,          # reflections sampled per failed solve
+    sampler_refresh_every: int = 10,
+    # ── Reflection mode ──────────────────────────────────────────────────────
+    reflection_mode: str      = "full",     # "plan" | "full"
+    # ── Decoding ─────────────────────────────────────────────────────────────
+    solve_max_tokens: int     = 512,
+    reflect_max_tokens: int   = 192,
+    retry_max_tokens: int     = 512,
+    temperature: float        = 0.7,
+    top_p: float              = 0.95,
+    reflect_temperature: float = 0.7,       # higher than RFT to encourage diversity
+    # ── GRPO ─────────────────────────────────────────────────────────────────
+    clip_negative_advantages: bool = False, # if True, clip adv to [0, ∞) → RFT fallback
+    advantage_eps: float      = 1e-8,       # stability epsilon for std normalisation
+    # ── Optimiser ────────────────────────────────────────────────────────────
+    lr: float                 = 5e-7,       # paper default (lower than RFT)
+    beta1: float              = 0.9,
+    beta2: float              = 0.95,
+    weight_decay: float       = 0.0,
+    grad_clip: float          = 1.0,
+    max_seq_len: int          = 1024,
+    # ── Checkpointing ─────────────────────────────────────────────────────────
+    checkpoint_every: int     = 0,
+    # ── Output ───────────────────────────────────────────────────────────────
+    output_dir: str           = "results/runs",
+) -> None:
+
+    # ── Resolve defaults ─────────────────────────────────────────────────────
+    _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    if train_jsonl_paths is None:
+        train_jsonl_paths = [
+            str(_REPO_ROOT / "data" / "processed" / "gsm8k_train.jsonl"),
+            str(_REPO_ROOT / "data" / "processed" / "math_train.jsonl"),
+        ]
+    if run_name is None:
+        run_name = f"rrr_grpo-{reflection_mode}-r{rank}-seed{seed}"
+    if sft_checkpoint is None:
+        mode_to_sft = {
+            "full": f"qwen3-4b-reflect_full_retry-r{rank}-seed{seed}",
+            "plan": f"qwen3-4b-reflect_plan_retry-r{rank}-seed{seed}",
+        }
+        sft_checkpoint = mode_to_sft.get(reflection_mode,
+                                          f"qwen3-4b-reflect_{reflection_mode}_retry-r{rank}-seed{seed}")
+        print(f"[rrr_grpo] --sft_checkpoint not set, defaulting to '{sft_checkpoint}'")
+
+    print(textwrap.dedent(f"""
+    +------------------------------------------------------+
+    |      RRR-GRPO Training  (Phase 3 - Full Paper)      |
+    +------------------------------------------------------+
+    |  base_model       : {base_model:<32s}|
+    |  sft_checkpoint   : {sft_checkpoint:<32s}|
+    |  run_name         : {run_name:<32s}|
+    |  reflection_mode  : {reflection_mode:<32s}|
+    |  max_steps        : {max_steps:<32d}|
+    |  problems/step    : {problems_per_step:<32d}|
+    |  grpo_k (samples) : {grpo_k:<32d}|
+    |  sampler refresh  : every {sampler_refresh_every:<26d}|
+    |  lr               : {lr:<32g}|
+    |  seed             : {seed:<32d}|
+    |  clip_neg_adv     : {str(clip_negative_advantages):<32s}|
+    +------------------------------------------------------+
+    """))
+
+    # ── API key ───────────────────────────────────────────────────────────────
+    if not os.getenv("TINKER_API_KEY"):
+        raise RuntimeError("TINKER_API_KEY not set. Add it to .env.")
+
+    import tinker
+    from tinker import types
+
+    # ── Create training client ────────────────────────────────────────────────
+    service = tinker.ServiceClient()
+    print("[rrr_grpo] creating LoRA training client ...")
+    training_client = service.create_lora_training_client(
+        base_model=base_model,
+        rank=rank,
+        seed=seed,
+        train_attn=True,
+        train_mlp=True,
+        train_unembed=True,
+    )
+
+    # ── Load SFT warm-start ───────────────────────────────────────────────────
+    import json as _json
+    from pathlib import Path as _Path
+    _repo_root = _Path(__file__).resolve().parent.parent.parent
+    _meta_path = _repo_root / "results" / "runs" / f"{sft_checkpoint}.checkpoint.json"
+    if not _meta_path.exists():
+        raise FileNotFoundError(
+            f"Checkpoint metadata not found: {_meta_path}\n"
+            f"Re-run SFT training with train_sft_lora_tiny.py first."
+        )
+    _tinker_uri = _json.loads(_meta_path.read_text())["tinker_path"]
+    print(f"[rrr_grpo] loading SFT checkpoint '{sft_checkpoint}' from {_tinker_uri} ...")
+    training_client.load_state(_tinker_uri).result()
+    print("[rrr_grpo] SFT weights loaded.")
+
+    tokenizer = training_client.get_tokenizer()
+    print(f"[rrr_grpo] tokenizer ready  "
+          f"(chat_template={'yes' if _has_chat_template(tokenizer) else 'no'})")
+
+    adam_params = types.AdamParams(
+        learning_rate=lr,
+        beta1=beta1,
+        beta2=beta2,
+        weight_decay=weight_decay,
+        grad_clip_norm=grad_clip,
+    )
+
+    # ── Create initial sampling client ───────────────────────────────────────
+    sampler_name = f"{run_name}-rollout"
+    print(f"[rrr_grpo] creating initial sampling client '{sampler_name}' ...")
+    sampling_client = training_client.save_weights_and_get_sampling_client(
+        name=sampler_name
+    )
+    print("[rrr_grpo] sampling client ready.\n")
+
+    # ── Load training problems ────────────────────────────────────────────────
+    problems = _load_problems(train_jsonl_paths, limit=data_limit)
+    if not problems:
+        raise RuntimeError("No training problems loaded.")
+    rng = random.Random(seed)
+    rng.shuffle(problems)
+
+    # ── Counters ──────────────────────────────────────────────────────────────
+    global_step      = 0
+    total_rollouts   = 0
+    total_groups     = 0      # number of GRPO groups processed
+    total_pos_datums = 0      # datums with positive advantage
+    total_neg_datums = 0      # datums with negative advantage
+    total_skipped    = 0      # first-try correct (excluded from GRPO)
+    total_zero_var   = 0      # groups where all k had same reward (no signal)
+    problem_idx      = 0
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    log_path = output_path / f"{run_name}_train_log.jsonl"
+
+    # ── Main training loop ────────────────────────────────────────────────────
+    while global_step < max_steps:
+
+        # ── Refresh sampler to keep rollouts on-policy ───────────────────────
+        if global_step > 0 and global_step % sampler_refresh_every == 0:
+            print(f"[rrr_grpo][step {global_step}] refreshing sampling client ...")
+            sampling_client = training_client.save_weights_and_get_sampling_client(
+                name=sampler_name
+            )
+
+        step_datums: List = []
+        step_log:    List = []
+
+        # ── Gather this step's problems ───────────────────────────────────────
+        step_examples = []
+        for _ in range(problems_per_step):
+            ex        = problems[problem_idx % len(problems)]
+            problem_idx += 1
+            seed_base = seed + global_step * 10_000 + problem_idx
+            q         = ex.get("question", "")
+            dataset   = ex.get("dataset", "gsm8k")
+            gt        = parse_gt_final(ex)
+            if not q or gt is None:
+                continue
+            total_rollouts += 1
+            step_examples.append((ex, q, dataset, gt, seed_base))
+
+        # ── Stage 1: Fire all solve requests in parallel ──────────────────────
+        solve_futures = [
+            _fire_sample(
+                sampling_client, tokenizer,
+                build_solve_prompt(q, dataset),
+                types, tinker,
+                max_new_tokens=solve_max_tokens,
+                temperature=temperature, top_p=top_p,
+                seed=seed_base,
+            )
+            for (ex, q, dataset, gt, seed_base) in step_examples
+        ]
+
+        # Collect solve results; keep wrong ones for GRPO reflect/retry
+        wrong_batch = []
+        for (ex, q, dataset, gt, seed_base), fut in zip(step_examples, solve_futures):
+            try:
+                solve_text = _decode_future(fut, tokenizer)
+                p1  = parse_pred_final(solve_text)
+                ok1 = strict_match(ex, p1["strict"], gt)
+                if ok1:
+                    total_skipped += 1
+                    step_log.append({"outcome": "skip_correct", "q": q[:60]})
+                else:
+                    wrong_batch.append((ex, q, dataset, gt, seed_base, solve_text, p1))
+            except Exception as exc:
+                print(f"  [rrr_grpo][error] solve stage: {exc}")
+
+        # ── Stage 2: Fire k reflect requests per wrong problem (all parallel) ─
+        # Each wrong problem gets grpo_k reflect samples.
+        # We flatten all k*|wrong_batch| futures into one list.
+        reflect_futures = []   # flat list of (problem_idx_in_wrong, sample_j, future)
+        for prob_i, (ex, q, dataset, gt, seed_base, solve_text, p1) in enumerate(wrong_batch):
+            for j in range(grpo_k):
+                reflect_seed = seed_base + 1_000 + j * 100
+                fut = _fire_sample(
+                    sampling_client, tokenizer,
+                    build_reflection_prompt(reflection_mode, q, solve_text, p1["loose"]),
+                    types, tinker,
+                    max_new_tokens=reflect_max_tokens,
+                    temperature=reflect_temperature, top_p=top_p,
+                    seed=reflect_seed,
+                )
+                reflect_futures.append((prob_i, j, fut))
+
+        # Collect reflect results; group by problem
+        # retry_input[prob_i][j] = (reflect_text, future_placeholder)
+        reflect_results: List[List] = [[] for _ in wrong_batch]
+        for prob_i, j, fut in reflect_futures:
+            try:
+                reflect_text = _decode_future(fut, tokenizer)
+                reflect_text = "\n".join(reflect_text.splitlines()[:3]).strip()
+                reflect_results[prob_i].append(reflect_text)
+            except Exception as exc:
+                print(f"  [rrr_grpo][error] reflect stage prob={prob_i} j={j}: {exc}")
+                reflect_results[prob_i].append(None)  # placeholder
+
+        # ── Stage 3: Fire retry requests for all k reflections (all parallel) ─
+        retry_futures = []  # flat list of (prob_i, j, reflect_text, future)
+        for prob_i, (ex, q, dataset, gt, seed_base, solve_text, p1) in enumerate(wrong_batch):
+            for j, reflect_text in enumerate(reflect_results[prob_i]):
+                if reflect_text is None:
+                    retry_futures.append((prob_i, j, reflect_text, None))
+                    continue
+                retry_seed = seed_base + 2_000 + j * 100
+                fut = _fire_sample(
+                    sampling_client, tokenizer,
+                    build_retry_prompt(q, reflect_text, dataset),
+                    types, tinker,
+                    max_new_tokens=retry_max_tokens,
+                    temperature=temperature, top_p=top_p,
+                    seed=retry_seed,
+                )
+                retry_futures.append((prob_i, j, reflect_text, fut))
+
+        # Collect retry results; group by problem for GRPO advantage computation
+        # retry_results[prob_i] = list of (reflect_text, retry_text, reward)
+        retry_results: List[List] = [[] for _ in wrong_batch]
+        for prob_i, j, reflect_text, fut in retry_futures:
+            if fut is None:
+                continue
+            try:
+                (ex, q, dataset, gt, seed_base, solve_text, p1) = wrong_batch[prob_i]
+                retry_text = _decode_future(fut, tokenizer)
+                p2  = parse_pred_final(retry_text)
+                ok2 = strict_match(ex, p2["strict"], gt)
+                reward = 1.0 if ok2 else 0.0
+                retry_results[prob_i].append((reflect_text, retry_text, reward, p2))
+            except Exception as exc:
+                print(f"  [rrr_grpo][error] retry stage prob={prob_i} j={j}: {exc}")
+
+        # ── GRPO advantage computation and datum building ──────────────────────
+        for prob_i, (ex, q, dataset, gt, seed_base, solve_text, p1) in enumerate(wrong_batch):
+            group = retry_results[prob_i]
+            if not group:
+                continue
+
+            rewards = [r for (_, _, r, _) in group]
+            advantages = _compute_advantages(rewards, eps=advantage_eps)
+
+            n_correct = sum(1 for r in rewards if r > 0.5)
+            n_wrong   = len(rewards) - n_correct
+            total_groups += 1
+
+            if all(a == 0.0 for a in advantages):
+                total_zero_var += 1
+                print(f"  [grpo] ○  zero-var group    | step={global_step} | {q[:40]!r}"
+                      f" | all={'correct' if rewards[0] > 0.5 else 'wrong'}")
+                continue
+
+            for (reflect_text, retry_text, reward, p2), adv in zip(group, advantages):
+                if clip_negative_advantages:
+                    adv = max(0.0, adv)
+                    if adv == 0.0:
+                        continue  # skip datums with no positive signal
+
+                datums = _build_grpo_rrr_datums(
+                    question=q, dataset=dataset,
+                    solve_text=solve_text, reflect_text=reflect_text,
+                    retry_text=retry_text, reflection_mode=reflection_mode,
+                    advantage=adv,
+                    tokenizer=tokenizer, max_seq_len=max_seq_len, types=types,
+                )
+                step_datums.extend(datums)
+
+                if adv > 0:
+                    total_pos_datums += len(datums)
+                else:
+                    total_neg_datums += len(datums)
+
+            outcome_str = f"{n_correct}/{len(rewards)} correct"
+            print(f"  [grpo] ✦  group processed  | step={global_step} | {q[:40]!r}"
+                  f" | {outcome_str}")
+
+            step_log.append({
+                "step": global_step, "q": q[:60], "dataset": dataset,
+                "gt": gt, "rewards": rewards, "advantages": advantages,
+                "n_correct": n_correct,
+            })
+
+        # ── Gradient update ───────────────────────────────────────────────────
+        if step_datums:
+            try:
+                fb_future    = training_client.forward_backward(step_datums, "cross_entropy")
+                optim_future = training_client.optim_step(adam_params)
+                fb_result    = fb_future.result()
+                optim_future.result()
+
+                loss         = fb_result.metrics.get("loss:sum", float("nan"))
+                global_step += 1
+                print(
+                    f"[rrr_grpo] step {global_step:>4}/{max_steps}"
+                    f"  loss={loss:.4f}"
+                    f"  datums={len(step_datums)}"
+                    f"  groups={total_groups}"
+                    f"  pos={total_pos_datums}  neg={total_neg_datums}"
+                )
+
+                with open(log_path, "a", encoding="utf-8") as lf:
+                    lf.write(json.dumps({
+                        "step": global_step, "loss": loss,
+                        "n_datums": len(step_datums), "examples": step_log,
+                    }) + "\n")
+
+                if checkpoint_every > 0 and global_step % checkpoint_every == 0:
+                    _save_checkpoint(training_client, run_name, global_step, output_dir)
+
+            except Exception as exc:
+                print(f"[rrr_grpo][error] optim step failed at step={global_step}: {exc}")
+        else:
+            global_step += 1
+            print(
+                f"[rrr_grpo] step {global_step:>4}/{max_steps}"
+                f"  no datums  (skipped={total_skipped}  zero_var={total_zero_var})"
+            )
+
+    # ── Save final checkpoint ─────────────────────────────────────────────────
+    print(f"\n[rrr_grpo] training complete.")
+    print(f"[rrr_grpo] groups={total_groups}  zero_var={total_zero_var}"
+          f"  pos_datums={total_pos_datums}  neg_datums={total_neg_datums}"
+          f"  skipped={total_skipped}")
+    _save_checkpoint(training_client, run_name, global_step=None, output_dir=output_dir)
+    print(f"[rrr_grpo] done.  Evaluate with:\n"
+          f"       python scripts/eval_sft.py --run_name {run_name}"
+          f" --mode reflect_{reflection_mode}_retry --dataset both")
