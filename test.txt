@@ -1,0 +1,67 @@
+# full
+python -u scripts/run_rrr_eval.py --backend hf --model Qwen/Qwen2.5-0.5B-Instruct --seed 0 \
+  --input data/processed/math_test_200_seed0.jsonl --output results/runs/math200_reflect_full.jsonl \
+  --reflection_mode full --reflect_max_new_tokens 32 --retry_temperature 0.2 --solve_max_new_tokens 512 --retry_max_new_tokens 512
+
+# tail
+python -u scripts/run_rrr_eval.py ... --output results/runs/math200_reflect_tail.jsonl --reflection_mode tail ...
+
+# plan
+python -u scripts/run_rrr_eval.py ... --output results/runs/math200_reflect_plan.jsonl --reflection_mode plan ...
+
+# retry-only
+python -u scripts/run_rrr_eval.py ... --output results/runs/math200_retryonly.jsonl --retry_only ...
+
+# summarize runs
+scripts/summarize_runs.py
+
+
+  python scripts\train_sft_lora_tiny.py `
+      --base_model meta-llama/Llama-3.2-1B `
+      --train_jsonl data\processed\tiny_sft_500.jsonl `
+      --seed 42
+
+----------------------------------------------------------------------
+(phase 1 )
+# Condition 1 - Baseline CoT
+python scripts\train_sft_lora_tiny.py --mode baseline_solve --max_steps 500 --curriculum --seed 42
+
+# Condition 2 - Retry only
+python scripts\train_sft_lora_tiny.py --mode retry_only --max_steps 500 --curriculum --seed 42
+
+# Condition 3 - Full reflection + retry
+python scripts\train_sft_lora_tiny.py --mode reflect_full_retry --max_steps 500 --curriculum --seed 42
+
+# Condition 4 - Plan reflection + retry
+python scripts\train_sft_lora_tiny.py --mode reflect_plan_retry --max_steps 500 --curriculum --seed 42
+
+python scripts\eval_sft.py --mode baseline_solve     --dataset both
+python scripts\eval_sft.py --mode retry_only         --dataset both
+python scripts\eval_sft.py --mode reflect_full_retry --dataset both
+python scripts\eval_sft.py --mode reflect_plan_retry --dataset both
+python scripts\compare_results.py --dataset both
+
+----------------------------------------------------------------------
+(phase 2)
+python scripts\train_baseline_rlvr.py --mode solve --max_steps 200 --seed 42; 
+python scripts\train_baseline_rlvr.py --mode retry --max_steps 200 --seed 42;
+python scripts\train_rrr.py --reflection_mode full --max_steps 200 --seed 42; 
+python scripts\train_rrr.py --reflection_mode plan --max_steps 200 --seed 42; 
+python scripts\train_step_credit.py --max_steps 200 --seed 42
+
+python scripts\eval_sft.py --run_name baseline_rlvr_solve-r8-seed42 --mode baseline_solve --dataset both --resume; `
+python scripts\eval_sft.py --run_name baseline_rlvr_retry-r8-seed42 --mode retry_only --dataset both --resume; `
+
+python scripts\eval_sft.py --run_name rrr-full-r8-seed42 --mode reflect_full_retry --dataset both --resume; `
+python scripts\eval_sft.py --run_name rrr-plan-r8-seed42 --mode reflect_plan_retry --dataset both --resume; `
+python scripts\eval_sft.py --run_name step_credit-r8-seed42 --mode baseline_solve --dataset both --resume
+*
+
+python scripts\compare_results.py --dataset both
+
+-----------------------------------------------------------------------
+(phase 3, bonus, dont need to stack with phase 2)
+python scripts\train_baseline_grpo.py --mode solve --max_steps 200 --seed 42; `
+python scripts\train_baseline_grpo.py --mode retry --max_steps 200 --seed 42; `
+python scripts\train_rrr_grpo.py --reflection_mode full --max_steps 200 --seed 42; `
+python scripts\train_rrr_grpo.py --reflection_mode plan --max_steps 200 --seed 42
