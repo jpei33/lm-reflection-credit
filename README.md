@@ -21,7 +21,7 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 3. Run baseline, RRR, and step-credit experiments
 4. Generate plots
 
-## Results
+## Step 1: Pretraining Inference Results
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
 ## Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
