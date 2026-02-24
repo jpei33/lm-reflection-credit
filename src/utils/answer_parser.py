@@ -53,40 +53,39 @@ def extract_final_answer_strict(text: str):
 
 def extract_final_answer_loose(text: str):
     """
-    LOOSE:
-    - #### <number> (prefer the same capture as strict; keep last)
-    - #### <anything with a number> (fallback within #### line)
-    - \\boxed{<number>}
-    - fallback: last number anywhere
+    LOOSE final-answer extractor.
+
+    Priority:
+      1) Last "#### <number>" line (GSM8K-style)
+      2) Last "\boxed{...}" (supports multiple; grabs the last)
+      3) Fallback: last number appearing near the end of the text (last 5 non-empty lines)
     """
     if not text:
         return None
 
-    # 1) Prefer strict-style #### <number> capture (this prevents "1" vs "1/2" issues)
-    matches = _HASH_STRICT_RE.findall(text)
-    if matches:
-        return matches[-1].strip()
-
-    # 1b) Otherwise: scan #### lines and extract the last numeric token inside them
-    last = None
-    for m in _HASH_LINE_RE.finditer(text):
-        s = m.group(1)
-        m2 = _NUM_RE.search(s)
-        if m2:
-            last = m2.group(0).strip()
-    if last is not None:
-        return last
-
-    # 2) boxed
-    m = _BOXED_RE.search(text)
+    # 1) #### line (keep last match)
+    m = None
+    for mm in _HASH_LINE_RE.finditer(text):
+        m = mm
     if m:
-        m2 = _NUM_RE.search(m.group(1))
-        if m2:
-            return m2.group(0).strip()
+        line = m.group(0)
+        nm = _NUM_RE.search(line)
+        return nm.group(0) if nm else None
 
-    # 3) fallback: last number anywhere
-    nums = _NUM_RE.findall(text)
-    return nums[-1].strip() if nums else None
+    # 2) boxed (keep last)
+    m = None
+    for mm in _BOXED_RE.finditer(text):
+        m = mm
+    if m:
+        inside = m.group(1).strip()
+        nm = _NUM_RE.search(inside)
+        return nm.group(0) if nm else inside
+
+    # 3) fallback: last number in the last few lines (avoid grabbing early intermediate values)
+    tail_lines = [ln.strip() for ln in text.splitlines() if ln.strip()][-5:]
+    tail = "\n".join(tail_lines)
+    nums = list(_NUM_RE.finditer(tail))
+    return nums[-1].group(0) if nums else None
 
 
 def normalize_math_answer(s: str) -> str:

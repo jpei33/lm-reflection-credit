@@ -10,10 +10,27 @@ from src.utils.answer_parser import (
     math_strict_equal,
 )
 from src.utils.generator import GenConfig, Generator
+from fractions import Fraction
 
 # --------- Helpers for MATH / normalization ---------
 
 _BOXED_RE = re.compile(r"\\boxed\{([^}]*)\}")
+
+
+def _to_fraction(s: str) -> Optional[Fraction]:
+    if s is None:
+        return None
+    s = normalize_answer(s)
+    if s is None:
+        return None
+    # handle simple fractions or integers/decimals
+    try:
+        if "/" in s:
+            return Fraction(s)           # e.g. "5/6"
+        # decimals -> Fraction exactly via string
+        return Fraction(s)
+    except Exception:
+        return None
 
 
 def extract_last_boxed_balanced(text: str) -> Optional[str]:
@@ -119,28 +136,45 @@ def parse_gt_final(ex: dict) -> Optional[str]:
 
 def parse_pred_final(sol_text: str) -> dict:
     """
-    Parse model prediction final answer with fallbacks.
-    Returns dict with strict/loose/boxed values (all normalized).
+    Parse model prediction final answer with sensible fallbacks.
+
+    Returns:
+      - strict: best-effort for STRICT format (e.g., "#### <ans>" for GSM8K)
+      - loose: like strict, but will fall back only when strict is missing
+              (guarantees loose is never "worse" than strict when strict exists)
+      - boxed: last \boxed{...} (balanced braces) when present
+      - source: where the final answer came from
+    All fields are normalized with normalize_answer().
     """
-    strict = normalize_answer(extract_final_answer_strict(sol_text))
-    loose = normalize_answer(extract_final_answer_loose(sol_text))
+    sol_text = sol_text or ""
 
     boxed = None
-    if "\\boxed{" in (sol_text or ""):
+    if "\\boxed{" in sol_text:
         boxed = normalize_answer(extract_math_final(sol_text))
 
-    # fallback to boxed / last line
+    strict = normalize_answer(extract_final_answer_strict(sol_text))
+    # Prefer strict when available; otherwise relax.
+    if strict is not None:
+        loose = strict
+        source = "strict"
+    else:
+        loose = normalize_answer(extract_final_answer_loose(sol_text))
+        source = "loose" if loose is not None else None
+
+        if loose is None and boxed is not None:
+            loose = boxed
+            source = "boxed"
+        if loose is None:
+            loose = normalize_answer(extract_math_final(sol_text))
+            source = "last_line"
+
+    # If strict missing, try boxed / last-line to populate strict too.
     if strict is None and boxed is not None:
         strict = boxed
-    if loose is None and boxed is not None:
-        loose = boxed
-
     if strict is None:
         strict = normalize_answer(extract_math_final(sol_text))
-    if loose is None:
-        loose = normalize_answer(extract_math_final(sol_text))
 
-    return {"strict": strict, "loose": loose, "boxed": boxed}
+    return {"strict": strict, "loose": loose, "boxed": boxed, "source": source}
 
 
 def strict_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
@@ -195,21 +229,32 @@ def _tail_lines(text: str, n_lines: int = 6) -> str:
     return "\n".join(lines[-n_lines:]).strip()
 
 
+def _fmt_pred_final(pred_final: Optional[str]) -> str:
+    if pred_final is None:
+        return "<unparsed>"
+    s = str(pred_final).strip()
+    return s if s else "<unparsed>"
+
+
 def build_reflection_prompt_full(
     question: str,
     solution: str,
     pred_final: Optional[str],
 ) -> str:
+    pf = _fmt_pred_final(pred_final)
     return (
         "You are analyzing a failed math solution to improve the next attempt.\n"
-        "DO NOT include the correct final answer or any numeric final answer.\n"
+        "CRITICAL RULES:\n"
+        "- Do NOT include the correct final answer.\n"
+        "- Do NOT include ANY numbers at all (no digits, no decimals, no fractions).\n"
+        "- Do NOT restate the full solution.\n"
         "Output exactly 3 lines in this format:\n"
         "ERROR_TYPE: <short>\n"
-        "LIKELY_STEP: <step number or 'unknown'>\n"
+        "LIKELY_STEP: <step name or 'unknown'>\n"
         "FIX_PLAN: <one sentence>\n\n"
         f"Problem:\n{question}\n\n"
         f"Model's previous solution:\n{solution}\n\n"
-        f"Model's parsed final answer: {pred_final}\n"
+        f"Model's parsed final answer: {pf}\n"
     )
 
 
@@ -218,17 +263,20 @@ def build_reflection_prompt_tail(
     solution: str,
     pred_final: Optional[str],
 ) -> str:
+    pf = _fmt_pred_final(pred_final)
     tail = _tail_lines(solution, n_lines=6)
     return (
         "You are diagnosing why the model's final answer is likely wrong.\n"
-        "DO NOT include the correct final answer or any numeric final answer.\n"
-        "Do NOT rewrite the full solution.\n"
+        "CRITICAL RULES:\n"
+        "- Do NOT include the correct final answer.\n"
+        "- Do NOT include ANY numbers at all (no digits, no decimals, no fractions).\n"
+        "- Do NOT rewrite the full solution.\n"
         "Output exactly 3 lines in this format:\n"
         "ERROR_TYPE: <short>\n"
-        "LIKELY_STEP: <step number or 'unknown'>\n"
+        "LIKELY_STEP: <step name or 'unknown'>\n"
         "FIX_PLAN: <one sentence checklist of what to verify>\n\n"
         f"Problem:\n{question}\n\n"
-        f"Model's parsed final answer (may be wrong): {pred_final}\n\n"
+        f"Model's parsed final answer (may be wrong): {pf}\n\n"
         f"Last lines of model work (may be wrong):\n{tail}\n"
     )
 
@@ -237,17 +285,19 @@ def build_reflection_prompt_plan(
     question: str,
     pred_final: Optional[str],
 ) -> str:
+    pf = _fmt_pred_final(pred_final)
     return (
         "You will solve the problem again. First, write a short plan/checklist.\n"
-        "Rules:\n"
+        "CRITICAL RULES:\n"
         "- Do NOT reference or quote any previous solution.\n"
-        "- Do NOT include the correct final answer or any numeric final answer.\n"
-        "- Output exactly 3 lines:\n"
+        "- Do NOT include the correct final answer.\n"
+        "- Do NOT include ANY numbers at all (no digits, no decimals, no fractions).\n"
+        "Output exactly 3 lines:\n"
         "ERROR_TYPE: <most likely mistake category>\n"
         "LIKELY_STEP: <where mistakes often happen, or 'unknown'>\n"
         "FIX_PLAN: <one sentence checklist of verifications>\n\n"
         f"Problem:\n{question}\n\n"
-        f"Model's parsed final answer (may be wrong): {pred_final}\n"
+        f"Model's parsed final answer (may be wrong): {pf}\n"
     )
 
 
@@ -263,6 +313,7 @@ def build_reflection_prompt(
     if mode == "tail":
         return build_reflection_prompt_tail(question, solution, pred_final)
     return build_reflection_prompt_full(question, solution, pred_final)
+
 
 
 def build_retry_prompt(question: str, reflection: str, dataset: str = "") -> str:
@@ -482,7 +533,10 @@ def run_rrr_eval(
     os.makedirs(os.path.dirname(output_jsonl), exist_ok=True)
 
     # Stats for THIS invocation
-    n = 0
+    n = 0  # total records written (valid + skipped + failed)
+    n_valid = 0  # valid eval examples (denominator for accuracy)
+    num_skipped = 0
+    num_failed = 0
     first_correct_loose = 0
     first_correct_strict = 0
     retry_correct_loose = 0
@@ -549,10 +603,11 @@ def run_rrr_eval(
                         }
                         _append_jsonl(f_out, rec)
                         n += 1
+                        num_skipped += 1
                         written_since_start += 1
                         break
 
-                    print(f"[RRR] Example {n+1}/{max(total_examples,1)} (input_idx={i})", flush=True)
+                    print(f"[RRR] Example {n_valid+1}/{max(total_examples,1)} (input_idx={i})", flush=True)
 
                     # 1) Solve (seeded)
                     sol1, meta1 = gen.generate(build_solve_prompt(q, dataset), solve_cfg, seed=seed + i)
@@ -568,9 +623,10 @@ def run_rrr_eval(
                     p1 = parse_pred_final(sol1)
                     pred1_strict = p1["strict"]
                     pred1_loose = p1["loose"]
+                    pred1_src = p1.get("source", "unknown")
 
                     ok1_strict = strict_match(ex, pred1_strict, gt_final)
-                    ok1_loose = loose_match(ex, pred1_loose, gt_final)
+                    ok1_loose  = loose_match(ex, pred1_loose, gt_final)
 
                     first_correct_strict += int(ok1_strict)
                     first_correct_loose += int(ok1_loose)
@@ -586,6 +642,7 @@ def run_rrr_eval(
                             "solution": sol1,
                             "pred_final_strict": pred1_strict,
                             "pred_final_loose": pred1_loose,
+                            "pred_source": pred1_src,
                             "correct_strict": ok1_strict,
                             "correct_loose": ok1_loose,
                             "meta": meta1,
@@ -606,6 +663,7 @@ def run_rrr_eval(
                         else:
                             print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
 
+                            # Use pred1_loose (the model's parsed answer) in the reflection prompt
                             refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
                             refl_text, meta_r = gen.generate(
                                 refl_prompt,
@@ -642,11 +700,11 @@ def run_rrr_eval(
                         latency_total += lt
 
                         p2 = parse_pred_final(sol2)
-                        pred2_strict = p2["strict"]
-                        pred2_loose = p2["loose"]
+                        pred2 = p2["loose"]
+                        pred2_src = p2.get("source", "unknown")
 
-                        ok2_strict = strict_match(ex, pred2_strict, gt_final)
-                        ok2_loose = loose_match(ex, pred2_loose, gt_final)
+                        ok2_strict = strict_match(ex, pred2, gt_final)
+                        ok2_loose  = loose_match(ex, pred2, gt_final)
 
                         retry_correct_strict += int(ok2_strict)
                         retry_correct_loose += int(ok2_loose)
@@ -660,8 +718,8 @@ def run_rrr_eval(
 
                         rec["retry"] = {
                             "solution": sol2,
-                            "pred_final_strict": pred2_strict,
-                            "pred_final_loose": pred2_loose,
+                            "pred_final": pred2,
+                            "pred_source": pred2_src,
                             "correct_strict": ok2_strict,
                             "correct_loose": ok2_loose,
                             "meta": meta2,
@@ -669,6 +727,7 @@ def run_rrr_eval(
 
                     _append_jsonl(f_out, rec)
                     n += 1
+                    n_valid += 1
                     written_since_start += 1
                     break
 
@@ -682,6 +741,7 @@ def run_rrr_eval(
                         }
                         _append_jsonl(f_out, fail)
                         n += 1
+                        num_failed += 1
                         written_since_start += 1
                         print(f"[RRR][error] input_idx={i} failed permanently after {attempt-1} retries: {e}", flush=True)
                         break
@@ -695,24 +755,30 @@ def run_rrr_eval(
 
         _checkpoint(f_out)
 
+
     # ---- Print BOTH invocation stats and aggregate stats ----
     print(f"Wrote {n} new records in this invocation to {output_jsonl}")
-    print(f"(Invocation) First-try accuracy (loose):  {first_correct_loose}/{n} = {first_correct_loose/max(n,1):.3f}")
-    print(f"(Invocation) First-try accuracy (strict): {first_correct_strict}/{n} = {first_correct_strict/max(n,1):.3f}")
+    print(f"(Invocation) Skipped records: {num_skipped}")
+    print(f"(Invocation) Failed records:  {num_failed}")
+    print(f"(Invocation) Valid eval examples: {n_valid}")
+
+    print(f"(Invocation) First-try accuracy (loose):  {first_correct_loose}/{max(n_valid,1)} = {first_correct_loose/max(n_valid,1):.3f}")
+    print(f"(Invocation) First-try accuracy (strict): {first_correct_strict}/{max(n_valid,1)} = {first_correct_strict/max(n_valid,1):.3f}")
     if retries_attempted:
         print(f"(Invocation) Retry success (loose | conditional):  {retry_correct_loose}/{retries_attempted} = {retry_correct_loose/max(retries_attempted,1):.3f}")
         print(f"(Invocation) Retry success (strict| conditional): {retry_correct_strict}/{retries_attempted} = {retry_correct_strict/max(retries_attempted,1):.3f}")
-        print(f"(Invocation) Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{n} = {(first_correct_loose+retry_correct_loose)/max(n,1):.3f}")
-        print(f"(Invocation) Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{n} = {(first_correct_strict+retry_correct_strict)/max(n,1):.3f}")
+        print(f"(Invocation) Overall accuracy (loose):  {(first_correct_loose+retry_correct_loose)}/{max(n_valid,1)} = {(first_correct_loose+retry_correct_loose)/max(n_valid,1):.3f}")
+        print(f"(Invocation) Overall accuracy (strict): {(first_correct_strict+retry_correct_strict)}/{max(n_valid,1)} = {(first_correct_strict+retry_correct_strict)/max(n_valid,1):.3f}")
 
         if (not no_reflect) and (not retry_only):
             print(f"(Invocation) Reflection usefulness rate (heuristic): {useful_reflections}/{retries_attempted} = {useful_reflections/max(retries_attempted,1):.3f}")
 
     print(f"(Invocation) Tokens used (total): {tokens_total}")
-    print(f"(Invocation) Avg tokens / example: {tokens_total/max(n,1):.1f}")
+    print(f"(Invocation) Avg tokens / example: {tokens_total/max(n_valid,1):.1f}")
     print(f"(Invocation) Tokens by stage: solve={tokens_solve}, reflect={tokens_reflect}, retry={tokens_retry}")
+
     print(f"(Invocation) Total latency (s): {latency_total:.2f}")
-    print(f"(Invocation) Avg latency / example (s): {latency_total/max(n,1):.3f}")
+    print(f"(Invocation) Avg latency / example (s): {latency_total/max(n_valid,1):.3f}")
     print(f"(Invocation) Latency by stage: solve={latency_solve:.2f}, reflect={latency_reflect:.2f}, retry={latency_retry:.2f}")
 
     # Aggregate summary over full file (so rerun prints real totals)
