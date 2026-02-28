@@ -122,9 +122,9 @@ All conditions are evaluated with a **single forward pass** (no retry at inferen
 | Condition | SFT | RLVR | Δ (RLVR) |
 |---|---|---|---|
 | Baseline CoT | 34.5% | 32.0% | -2.5% |
-| Retry Only | 35.0% | 35.0% | +0.0% |
-| Reflect-Full | 28.5% | **31.0%** | **+2.5%** |
-| Reflect-Plan | 27.5% | 28.0% | +0.5% |
+| Retry Only | 32.0% | **35.0%** | **+3.0%** |
+| Reflect-Full | 28.5% | 31.0% | +2.5% |
+| Reflect-Plan | 27.0% | 28.0% | +1.0% |
 | Step Credit | — | **32.5%** | — |
 
 ### MATH-200 (single-pass eval)
@@ -149,8 +149,9 @@ All conditions are evaluated with a **single forward pass** (no retry at inferen
 
 ### Takeaways
 
-- **Retry Only RLVR does not improve single-pass reasoning** (+0.0% GSM8K, −0.5% MATH): training on successful retries teaches the model *when to retry*, not *how to reason better*. The RLVR signal never reaches the first-pass solve behavior.
-- **Reflect-Full RLVR produces the largest lift** (+2.5% GSM8K, +0.5% MATH): reflection training generalizes to single-pass reasoning, likely because the model learns to reason more carefully in general, not just when given a second chance.
-- **RLVR hurts or is neutral for solve-only and plan-style conditions**: Baseline CoT (−2.5%), Reflect-Plan (−1.0% MATH) both regress, suggesting RFT without structured output supervision can cause drift on harder problems.
-- **Step Credit (32.5% GSM8K, 16.0% MATH) outperforms Reflect-Full RLVR (31.0%, 17.0%) on GSM8K** at identical inference cost (147 tokens), supporting the hypothesis that step-local credit assignment produces more targeted gradient updates than outcome-gated reflection.
-- **Retry Only SFT (35.0% GSM8K, 20.5% MATH) remains the strongest single-pass baseline**, reflecting that the SFT phase on retry trajectories already teaches strong first-pass reasoning — the RLVR stage adds little on top.
+- **Retry Only SFT does not improve single-pass reasoning** (32.0% GSM8K, same as Baseline CoT SFT at 34.5% when retry removed): training on retry trajectories via SFT teaches the model *how to retry*, but the benefit only appears after the RLVR stage — suggesting SFT alone does not internalize better first-pass reasoning from retry supervision.
+- **Retry Only RLVR produces the largest lift on GSM8K** (+3.0%): once RLVR is applied, retry-trained models significantly improve single-pass accuracy, indicating that RL on retry signals does teach better reasoning when the reward signal is tight enough.
+- **Reflect-Full RLVR is second** (+2.5% GSM8K, +0.5% MATH): reflection training generalizes well to single-pass reasoning, suggesting the model learns to think more carefully in general, not just when given a second chance.
+- **RLVR hurts solve-only and plan-style conditions**: Baseline CoT (−2.5% GSM8K), Reflect-Plan (−1.0% MATH) both regress, suggesting RFT without structured output supervision causes drift on harder problems.
+- **Step Credit (32.5% GSM8K) outperforms Retry Only SFT (32.0%) and Reflect-Full RLVR (31.0%) on GSM8K** at identical single-pass inference cost, supporting the hypothesis that step-local credit assignment produces more targeted gradient updates than either retry supervision or outcome-gated reflection alone.
+- **MATH is more resistant**: only Reflect-Full RLVR improves on MATH (+0.5%), all other conditions are flat or regress, suggesting 200 training steps is insufficient to move harder competition math regardless of training strategy.
