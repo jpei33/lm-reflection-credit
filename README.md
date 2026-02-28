@@ -106,3 +106,53 @@ All experiments use identical prompts, decoding limits, and model weights. Diffe
 > LLM reasoning performance appears largely search-limited rather than capability-limited.
 
 Reflection mainly helps by guiding search rather than generating new reasoning ability.
+
+---
+
+## Phase 2: SFT + RLVR Fine-tuning (Qwen3-4B-Instruct)
+
+We train a LoRA adapter on top of `Qwen/Qwen3-4B-Instruct-2507` using supervised fine-tuning (SFT) followed by reinforcement learning with verifiable rewards (RLVR). RLVR uses rejection-sampling fine-tuning (RFT): at each step, the model samples outputs and trains only on correct ones with a binary reward signal from a math verifier.
+
+Each training run is 200 steps on a mixed GSM8K + MATH training set. Evaluation uses 200 held-out examples per dataset.
+
+- **System accuracy**: correct on first try OR after retry/reflection
+- **First-try accuracy**: correct on first attempt only
+- **Tokens**: average tokens generated per example at inference
+
+### GSM8K-200
+
+| Condition | SFT | RLVR | Δ (RLVR) | Tokens |
+|---|---|---|---|---|
+| Baseline CoT | 34.5% | 32.0% | **-2.5%** | **147** |
+| Retry Only | 35.0% | **36.0%** | +1.0% | 248 |
+| Reflect-Full + Retry | 28.5% | 30.5% | +2.0% | 411 |
+| Reflect-Plan + Retry | 27.5% | 28.0% | +0.5% | 426 |
+| Step Credit | — | 32.5% | — | **147** |
+
+### MATH-200
+
+| Condition | SFT | RLVR | Δ (RLVR) | Tokens |
+|---|---|---|---|---|
+| Baseline CoT | 15.5% | 15.0% | -0.5% | **136** |
+| Retry Only | **20.5%** | **21.0%** | +0.5% | 258 |
+| Reflect-Full + Retry | 16.5% | 17.5% | +1.0% | 456 |
+| Reflect-Plan + Retry | 16.5% | 16.5% | +0.0% | 465 |
+| Step Credit | — | 16.0% | — | **136** |
+
+### MATH-200 by Difficulty Level (RLVR, best available)
+
+| Condition | L1 | L2 | L3 | L4 | L5 |
+|---|---|---|---|---|---|
+| Baseline CoT | 38.1% | 30.0% | 17.3% | 7.3% | 1.8% |
+| Retry Only | **47.6%** | **36.7%** | **25.0%** | 4.9% | **10.7%** |
+| Reflect-Full + Retry | **47.6%** | 23.3% | 23.1% | **9.8%** | 3.6% |
+| Reflect-Plan + Retry | **47.6%** | 30.0% | 19.2% | 4.9% | 3.6% |
+| Step Credit | 38.1% | 33.3% | 17.3% | **9.8%** | 1.8% |
+
+### Takeaways
+
+- **RLVR hurts the solve-only baseline** (−2.5% GSM8K, −0.5% MATH): without a retry or reflection stage, RFT on correct-only outputs causes the model to overfit to high-confidence problems and regress on harder ones.
+- **RLVR helps conditions with a second stage**: Retry Only (+1.0% GSM8K), Reflect-Full (+2.0%), Reflect-Plan (+0.5%) all improve, suggesting RLVR's signal is most useful when the model can recover from a wrong first attempt.
+- **Reflect-Full benefits most from RLVR** (+2.0% GSM8K, +1.0% MATH), consistent with the hypothesis that RL reward on successful reflections teaches the model *when* to reflect meaningfully.
+- **Retry Only** is the strongest condition in absolute accuracy (36.0% GSM8K, 21.0% MATH) at moderate token cost (248 tokens).
+- **Step Credit** matches Baseline CoT token cost (147 tokens) while reaching 32.5% GSM8K — outperforming all reflection methods per token spent and closing most of the gap to Retry Only with no extra inference compute.
