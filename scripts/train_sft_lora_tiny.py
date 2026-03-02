@@ -333,9 +333,15 @@ def parse_args() -> argparse.Namespace:
                      help="Micro-batches before optim_step (effective batch = batch_size x grad_accum)")
     opt.add_argument("--max_seq_len",  type=int,   default=1024)
 
-    # -- Checkpoint --
+    # -- Checkpoint / resume --
     ap.add_argument("--checkpoint_every", type=int, default=0,
                     help="Call save_state every N optimizer steps (0 = off)")
+    ap.add_argument("--resume", action="store_true", default=False,
+                    help="Resume training from the latest (or --resume_step) checkpoint "
+                         "for this run_name, restoring weights and Adam state.")
+    ap.add_argument("--resume_step", type=int, default=-1,
+                    help="Step to resume from (-1 = auto-detect highest mid-run snapshot, "
+                         "falling back to the final checkpoint).")
 
     # -- Sampling (post-training eval) --
     samp = ap.add_argument_group("Post-training sampling")
@@ -363,6 +369,64 @@ def parse_args() -> argparse.Namespace:
                            "when --mode is set, else lora-r{rank}-seed{seed}")
 
     return ap.parse_args()
+
+
+# -----------------------------------------------------------------------------
+# Resume helper
+# -----------------------------------------------------------------------------
+
+def _resolve_resume(run_name: str, resume_step: int, output_dir: str):
+    """
+    Locate a checkpoint to resume SFT from; return (tinker_uri, start_step).
+
+    Priority:
+      1. --resume_step N  → {run_name}-step{N}.checkpoint.json
+      2. auto             → highest {run_name}-step*.checkpoint.json
+      3. fallback         → {run_name}.checkpoint.json (needs steps_completed field)
+    """
+    import json as _json
+    import re as _re
+    from pathlib import Path as _Path
+
+    ckpt_dir = _Path(output_dir)
+
+    if resume_step > 0:
+        p = ckpt_dir / f"{run_name}-step{resume_step}.checkpoint.json"
+        if not p.exists():
+            raise FileNotFoundError(f"Requested resume checkpoint not found: {p}")
+        return _json.loads(p.read_text())["tinker_path"], resume_step
+
+    pattern = _re.compile(rf"^{_re.escape(run_name)}-step(\d+)\.checkpoint\.json$")
+    best_step, best_path = -1, None
+    for p in ckpt_dir.glob(f"{run_name}-step*.checkpoint.json"):
+        m = pattern.match(p.name)
+        if m:
+            s = int(m.group(1))
+            if s > best_step:
+                best_step, best_path = s, p
+
+    if best_path is not None:
+        meta = _json.loads(best_path.read_text())
+        start = meta.get("steps_completed", best_step)
+        print(f"[resume] auto-detected checkpoint at step {start}: {best_path}")
+        return meta["tinker_path"], start
+
+    final_path = ckpt_dir / f"{run_name}.checkpoint.json"
+    if final_path.exists():
+        meta = _json.loads(final_path.read_text())
+        start = meta.get("steps_completed")
+        if start is None:
+            raise ValueError(
+                f"Final checkpoint {final_path} has no 'steps_completed' field.\n"
+                f"Pass --resume_step N explicitly."
+            )
+        print(f"[resume] using final checkpoint ({start} steps): {final_path}")
+        return meta["tinker_path"], start
+
+    raise FileNotFoundError(
+        f"No resumable checkpoint found for run '{run_name}' in {ckpt_dir}.\n"
+        f"Run with --checkpoint_every N to create mid-run snapshots."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -430,19 +494,42 @@ def main() -> None:
 
     service = tinker.ServiceClient()
 
-    # create_lora_training_client takes: base_model, rank, seed, train_mlp,
-    # train_attn, train_unembed, user_metadata.
-    # seed here controls LoRA weight initialisation on the remote GPU worker.
-    print(f"[tinker] creating LoRA training client (rank={args.rank}, seed={args.seed}) ...")
-    training_client = service.create_lora_training_client(
-        base_model=args.base_model,
-        rank=args.rank,
-        seed=args.seed,              # <- reproducible LoRA init (remote)
-        train_attn=args.train_attn,
-        train_mlp=args.train_mlp,
-        train_unembed=args.train_unembed,
-        user_metadata={"run_name": args.run_name, "seed": str(args.seed)},
-    )
+    if args.resume:
+        # Restore weights + Adam state from a prior checkpoint.
+        _resume_uri, _start_step = _resolve_resume(
+            args.run_name, args.resume_step,
+            str(_REPO_ROOT / args.output_dir if hasattr(args, "output_dir") else _REPO_ROOT / "results/runs")
+        )
+        print(f"[tinker] resuming from step {_start_step}: {_resume_uri}")
+        training_client = service.create_training_client_from_state(
+            path=_resume_uri,
+            user_metadata={"run_name": args.run_name, "resumed_from_step": str(_start_step)},
+        )
+        print(f"[tinker] training state restored (step {_start_step}).")
+
+        # Advance the data iterator to approximately the right position so we
+        # don't re-train on examples already seen in the previous run.
+        # Each optimizer step consumed grad_accum * batch_size examples.
+        _examples_seen = _start_step * args.grad_accum * args.batch_size
+        _skip = _examples_seen % len(rows)   # wrap within epoch
+        if _skip > 0:
+            rows = rows[_skip:] + rows[:_skip]
+            print(f"[data] skipped {_skip} examples to resume at approx. step {_start_step}.")
+    else:
+        _start_step = 0
+        # create_lora_training_client takes: base_model, rank, seed, train_mlp,
+        # train_attn, train_unembed, user_metadata.
+        # seed here controls LoRA weight initialisation on the remote GPU worker.
+        print(f"[tinker] creating LoRA training client (rank={args.rank}, seed={args.seed}) ...")
+        training_client = service.create_lora_training_client(
+            base_model=args.base_model,
+            rank=args.rank,
+            seed=args.seed,              # <- reproducible LoRA init (remote)
+            train_attn=args.train_attn,
+            train_mlp=args.train_mlp,
+            train_unembed=args.train_unembed,
+            user_metadata={"run_name": args.run_name, "seed": str(args.seed)},
+        )
     print("[tinker] training client ready.")
 
     # -- Load tokenizer via Tinker (correct tokenizer for the remote model) -
@@ -473,7 +560,7 @@ def main() -> None:
     # With gradient accumulation we fire grad_accum forward_backward calls,
     # then a single optim_step, then await everything.
 
-    global_step  = 0     # optimizer steps taken
+    global_step  = _start_step   # 0 for fresh runs; >0 when resuming
     micro_step   = 0     # forward_backward calls since last optim_step
     pending_fb   = []    # APIFutures for current accumulation window
     budget_hit   = False # set True when --max_steps is reached
@@ -527,9 +614,17 @@ def main() -> None:
 
                 # Mid-run checkpoint
                 if args.checkpoint_every > 0 and global_step % args.checkpoint_every == 0:
+                    import json as _ckpt_json
+                    from pathlib import Path as _ckpt_path
                     ckpt_name = f"{args.run_name}-step{global_step}"
-                    training_client.save_state(ckpt_name).result()
-                    print(f"\n[ckpt] saved state: {ckpt_name}")
+                    _ckpt_resp = training_client.save_state(ckpt_name).result()
+                    _ckpt_meta = _ckpt_path(_REPO_ROOT / "results" / "runs" / f"{ckpt_name}.checkpoint.json")
+                    _ckpt_meta.write_text(_ckpt_json.dumps({
+                        "run_name": ckpt_name,
+                        "tinker_path": _ckpt_resp.path,
+                        "steps_completed": global_step,
+                    }, indent=2))
+                    print(f"\n[ckpt] saved state: {ckpt_name} -> {_ckpt_resp.path}")
 
                 # Step budget check
                 if args.max_steps > 0 and global_step >= args.max_steps:
@@ -569,7 +664,11 @@ def main() -> None:
     _meta_path = _ckpt_dir / f"{args.run_name}.checkpoint.json"
     import json as _json
     _meta_path.write_text(
-        _json.dumps({"run_name": args.run_name, "tinker_path": tinker_path}, indent=2)
+        _json.dumps({
+            "run_name": args.run_name,
+            "tinker_path": tinker_path,
+            "steps_completed": global_step,
+        }, indent=2)
     )
     print(f"[save] checkpoint metadata written to: {_meta_path}")
 

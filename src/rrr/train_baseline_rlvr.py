@@ -259,10 +259,74 @@ def _save_checkpoint(training_client, run_name: str, global_step, output_dir: st
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     meta_path   = ckpt_dir / f"{ckpt_name}.checkpoint.json"
     meta_path.write_text(
-        _json.dumps({"run_name": ckpt_name, "tinker_path": tinker_uri}, indent=2)
+        _json.dumps({
+            "run_name": ckpt_name,
+            "tinker_path": tinker_uri,
+            "steps_completed": global_step,   # None for final save (keyed by run_name)
+        }, indent=2)
     )
     print(f"[ckpt] saved: {tinker_uri}  (metadata -> {meta_path})")
     return tinker_uri
+
+
+def _resolve_resume(run_name: str, resume_step: int, output_dir: str):
+    """
+    Locate the checkpoint to resume from and return (tinker_uri, start_step).
+
+    If resume_step > 0, looks for {run_name}-step{resume_step}.checkpoint.json.
+    If resume_step == -1 (auto), scans output_dir for the highest-step snapshot
+    of this run, falling back to the final {run_name}.checkpoint.json.
+    Raises FileNotFoundError if nothing suitable is found.
+    """
+    import json as _json
+    import re
+    from pathlib import Path as _Path
+
+    ckpt_dir = _Path(output_dir)
+
+    if resume_step > 0:
+        meta_path = ckpt_dir / f"{run_name}-step{resume_step}.checkpoint.json"
+        if not meta_path.exists():
+            raise FileNotFoundError(
+                f"Requested resume checkpoint not found: {meta_path}"
+            )
+        meta = _json.loads(meta_path.read_text())
+        return meta["tinker_path"], resume_step
+
+    # Auto-detect: find highest-step mid-run snapshot, else fall back to final.
+    pattern = re.compile(rf"^{re.escape(run_name)}-step(\d+)\.checkpoint\.json$")
+    best_step, best_path = -1, None
+    for p in ckpt_dir.glob(f"{run_name}-step*.checkpoint.json"):
+        m = pattern.match(p.name)
+        if m:
+            s = int(m.group(1))
+            if s > best_step:
+                best_step, best_path = s, p
+
+    if best_path is not None:
+        meta = _json.loads(best_path.read_text())
+        start = meta.get("steps_completed", best_step)
+        print(f"[resume] auto-detected checkpoint at step {start}: {best_path}")
+        return meta["tinker_path"], start
+
+    # Fall back to final checkpoint (step count unknown — caller must handle)
+    final_path = ckpt_dir / f"{run_name}.checkpoint.json"
+    if final_path.exists():
+        meta = _json.loads(final_path.read_text())
+        start = meta.get("steps_completed")
+        if start is None:
+            raise ValueError(
+                f"Final checkpoint {final_path} has no 'steps_completed' field.\n"
+                f"Re-run training with the updated script to record step counts, "
+                f"or pass --resume_step N explicitly."
+            )
+        print(f"[resume] using final checkpoint ({start} steps): {final_path}")
+        return meta["tinker_path"], start
+
+    raise FileNotFoundError(
+        f"No resumable checkpoint found for run '{run_name}' in {ckpt_dir}.\n"
+        f"Run with --checkpoint_every N to create mid-run snapshots."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +383,10 @@ def train_baseline_rlvr(
     weight_decay: float        = 0.0,
     grad_clip: float           = 1.0,
     max_seq_len: int           = 1024,
-    # ── Checkpointing ─────────────────────────────────────────────────────────
+    # ── Checkpointing / resume ────────────────────────────────────────────────
     checkpoint_every: int      = 0,        # save_state every N steps (0 = off)
+    resume: bool               = False,    # continue from a saved checkpoint
+    resume_step: int           = -1,       # -1 = auto-detect highest snapshot
     # ── Output ───────────────────────────────────────────────────────────────
     output_dir: str            = "results/runs",
 ) -> None:
@@ -378,32 +444,42 @@ def train_baseline_rlvr(
 
     # ── Training client ───────────────────────────────────────────────────────
     service = tinker.ServiceClient()
-    print("[baseline_rlvr] creating LoRA training client ...")
-    training_client = service.create_lora_training_client(
-        base_model=base_model,
-        rank=rank,
-        seed=seed,
-        train_attn=True,
-        train_mlp=True,
-        train_unembed=True,
-    )
 
-    # ── Load SFT warm-start ───────────────────────────────────────────────────
-    # sft_checkpoint is a run name; resolve to the Tinker URI via the sidecar
-    # file written by train_sft_lora_tiny.py after training.
-    import json as _json
-    from pathlib import Path as _Path
-    _repo_root = _Path(__file__).resolve().parent.parent.parent
-    _meta_path = _repo_root / "results" / "runs" / f"{sft_checkpoint}.checkpoint.json"
-    if not _meta_path.exists():
-        raise FileNotFoundError(
-            f"Checkpoint metadata not found: {_meta_path}\n"
-            f"Re-run SFT training with the updated train_sft_lora_tiny.py which calls save_state()."
+    if resume:
+        # Restore full training state (weights + Adam moments) from a prior run.
+        tinker_uri, start_step = _resolve_resume(run_name, resume_step, output_dir)
+        print(f"[baseline_rlvr] resuming from step {start_step}: {tinker_uri}")
+        training_client = service.create_training_client_from_state(
+            path=tinker_uri,
+            user_metadata={"run_name": run_name, "resumed_from_step": str(start_step)},
         )
-    _tinker_uri = _json.loads(_meta_path.read_text())["tinker_path"]
-    print(f"[baseline_rlvr] loading SFT checkpoint '{sft_checkpoint}' from {_tinker_uri} ...")
-    training_client.load_state(_tinker_uri).result()
-    print("[baseline_rlvr] SFT weights loaded.")
+        print(f"[baseline_rlvr] training state restored (step {start_step}).")
+    else:
+        start_step = 0
+        print("[baseline_rlvr] creating LoRA training client ...")
+        training_client = service.create_lora_training_client(
+            base_model=base_model,
+            rank=rank,
+            seed=seed,
+            train_attn=True,
+            train_mlp=True,
+            train_unembed=True,
+        )
+
+        # ── Load SFT warm-start ───────────────────────────────────────────────
+        import json as _json
+        from pathlib import Path as _Path
+        _repo_root = _Path(__file__).resolve().parent.parent.parent
+        _meta_path = _repo_root / "results" / "runs" / f"{sft_checkpoint}.checkpoint.json"
+        if not _meta_path.exists():
+            raise FileNotFoundError(
+                f"Checkpoint metadata not found: {_meta_path}\n"
+                f"Re-run SFT training with the updated train_sft_lora_tiny.py which calls save_state()."
+            )
+        _tinker_uri = _json.loads(_meta_path.read_text())["tinker_path"]
+        print(f"[baseline_rlvr] loading SFT checkpoint '{sft_checkpoint}' from {_tinker_uri} ...")
+        training_client.load_state(_tinker_uri).result()
+        print("[baseline_rlvr] SFT weights loaded.")
 
     tokenizer = training_client.get_tokenizer()
     print(f"[baseline_rlvr] tokenizer ready  "
@@ -430,7 +506,7 @@ def train_baseline_rlvr(
     rng.shuffle(problems)
 
     # ── Counters ──────────────────────────────────────────────────────────────
-    global_step    = 0
+    global_step    = start_step   # 0 for fresh runs, >0 when resuming
     total_rollouts = 0
     total_trained  = 0   # datums that produced a gradient
     total_skipped  = 0   # wrong (no useful signal for this mode)
