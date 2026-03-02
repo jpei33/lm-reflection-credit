@@ -21,10 +21,10 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 3. Run baseline, RRR, and step-credit experiments
 4. Generate plots
 
-## Step 1: Pretraining Inference Results
+## Phase 0: Pretraining Inference Results
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
-## Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
+## Phase 0: Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
 
 We evaluate four inference strategies — **baseline**, **retry-only**, **reflection-full**, **reflection-plan**, and **reflection-tail** — on two reasoning benchmarks:
 
@@ -109,7 +109,7 @@ Reflection mainly helps by guiding search rather than generating new reasoning a
 
 ---
 
-## Phase 2: SFT + RLVR Fine-tuning (Qwen3-4B-Instruct)
+## Phase 1: SFT + RLVR Fine-tuning (Qwen3-4B-Instruct)
 
 We train a LoRA adapter on top of `Qwen/Qwen3-4B-Instruct-2507` using supervised fine-tuning (SFT) followed by reinforcement learning with verifiable rewards (RLVR). RLVR uses rejection-sampling fine-tuning (RFT): at each step, the model samples outputs and trains only on correct ones with a binary reward signal from a math verifier.
 
@@ -174,9 +174,9 @@ GSM8K has no native difficulty labels. Difficulty is proxied by the number of no
 
 ---
 
-### Efficiency-Accuracy Tradeoff (Phase 2)
+### Efficiency-Accuracy Tradeoff (Phase 1)
 
-All Phase 2 conditions are evaluated with a **single forward pass**, so inference token cost is essentially identical across conditions (~5–6 completion tokens on GSM8K, ~8 on MATH). The plot below shows that accuracy differences are driven entirely by training method, not inference compute.
+All Phase 1 conditions are evaluated with a **single forward pass**, so inference token cost is essentially identical across conditions (~5–6 completion tokens on GSM8K, ~8 on MATH). The plot below shows that accuracy differences are driven entirely by training method, not inference compute.
 
 <p align="center">
   <img src="figures/phase2_efficiency_accuracy.png" width="90%" />
