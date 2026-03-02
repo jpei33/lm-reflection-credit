@@ -147,6 +147,18 @@ All conditions are evaluated with a **single forward pass** (no retry at inferen
 | Reflect-Plan | 42.9% | 30.0% | 19.2% | 4.9% | 1.8% |
 | Step Credit | 38.1% | 33.3% | 17.3% | **9.8%** | 1.8% |
 
+### Efficiency-Accuracy Tradeoff (Phase 2)
+
+All Phase 2 conditions are evaluated with a **single forward pass**, so inference token cost is essentially identical across conditions (~5–6 completion tokens on GSM8K, ~8 on MATH). The plot below shows that accuracy differences are driven entirely by training method, not inference compute.
+
+<p align="center">
+  <img src="figures/phase2_efficiency_accuracy.png" width="90%" />
+</p>
+
+Token counts annotated above each RLVR bar confirm near-identical inference cost across all conditions.
+
+---
+
 ### Takeaways
 
 - **Retry Only SFT does not improve single-pass reasoning** (32.0% GSM8K, same as Baseline CoT SFT at 34.5% when retry removed): training on retry trajectories via SFT teaches the model *how to retry*, but the benefit only appears after the RLVR stage — suggesting SFT alone does not internalize better first-pass reasoning from retry supervision.
