@@ -147,6 +147,33 @@ All conditions are evaluated with a **single forward pass** (no retry at inferen
 | Reflect-Plan | 42.9% | 30.0% | 19.2% | 4.9% | 1.8% |
 | Step Credit | 38.1% | 33.3% | 17.3% | **9.8%** | 1.8% |
 
+---
+
+### GSM8K-200 by Difficulty (RLVR, single-pass)
+
+GSM8K has no native difficulty labels. Difficulty is proxied by the number of non-trivial computation steps in the reference solution (i.e. `<<a op b=c>>` annotations where `a ≠ c`).
+
+| Condition | Easy (≤2 steps, n=69) | Medium (3–4 steps, n=92) | Hard (5+ steps, n=39) |
+|---|---|---|---|
+| Baseline CoT | 58.0% | 23.9% | 5.1% |
+| Retry Only | **59.4%** | **28.3%** | **7.7%** |
+| Reflect-Full | 53.6% | 25.0% | 5.1% |
+| Reflect-Plan | 56.5% | 16.3% | 5.1% |
+| Step Credit | 58.0% | **25.0%** | 5.1% |
+
+<p align="center">
+  <img src="figures/gsm8k_difficulty_stratified.png" width="92%" />
+</p>
+
+**Takeaways from difficulty stratification:**
+
+- Retry Only RLVR leads across all tiers, including Hard (7.7% vs 5.1% for all others), suggesting retry-based RL generalizes better to multi-step problems.
+- Step Credit is competitive on Medium (tied with Reflect-Full at 25.0%) and avoids the collapse seen in Reflect-Plan (16.3%), but does **not** show a clear advantage on Hard GSM8K problems relative to the other RLVR conditions.
+- The Hard tier (n=39) is too small to draw firm conclusions: the gap between 5.1% (2 correct) and 7.7% (3 correct) is a difference of one example.
+- The MATH L4 result (Step Credit 9.8% vs Baseline CoT 7.3%) provides slightly stronger, though still limited, evidence that step-local credit helps at higher difficulty — best confirmed with more training steps and multi-seed runs.
+
+---
+
 ### Efficiency-Accuracy Tradeoff (Phase 2)
 
 All Phase 2 conditions are evaluated with a **single forward pass**, so inference token cost is essentially identical across conditions (~5–6 completion tokens on GSM8K, ~8 on MATH). The plot below shows that accuracy differences are driven entirely by training method, not inference compute.
