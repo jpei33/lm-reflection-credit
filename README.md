@@ -21,10 +21,9 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 3. Run baseline, RRR, and step-credit experiments
 4. Generate plots
 
-## Phase 0: Pretraining Inference Results
-All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
-
 ## Phase 0: Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
+
+All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
 
 We evaluate four inference strategies — **baseline**, **retry-only**, **reflection-full**, **reflection-plan**, and **reflection-tail** — on two reasoning benchmarks:
 
