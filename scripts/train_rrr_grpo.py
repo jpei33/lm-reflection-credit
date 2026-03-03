@@ -80,9 +80,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--grad_clip",   type=float, default=1.0)
     ap.add_argument("--max_seq_len", type=int,   default=1024)
 
-    # ── Checkpointing ───────────────────────────────────────────────────────
+    # ── Checkpointing / resume ───────────────────────────────────────────────
     ap.add_argument("--checkpoint_every", type=int, default=0,
                     help="Save checkpoint every N gradient steps (0 = off).")
+    ap.add_argument("--resume",      action="store_true", default=False,
+                    help="Resume from latest (or --resume_step) checkpoint for this run.")
+    ap.add_argument("--resume_step", type=int, default=-1,
+                    help="Step to resume from (-1 = auto-detect highest snapshot).")
 
     # ── Output ──────────────────────────────────────────────────────────────
     ap.add_argument("--output_dir",  default="results/runs")
@@ -121,6 +125,8 @@ def main() -> None:
         grad_clip=args.grad_clip,
         max_seq_len=args.max_seq_len,
         checkpoint_every=args.checkpoint_every,
+        resume=args.resume,
+        resume_step=args.resume_step,
         output_dir=args.output_dir,
     )
 
