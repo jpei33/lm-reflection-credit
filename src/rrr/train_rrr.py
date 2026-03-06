@@ -70,10 +70,12 @@ def _to_ids(result) -> List[int]:
 # Datum builders
 # ---------------------------------------------------------------------------
 
-def _messages_to_datum(messages, tokenizer, max_seq_len: int, types):
+def _messages_to_datum(messages, tokenizer, max_seq_len: int, types,
+                       completion_weight: float = 1.0):
     """
     Build a Tinker cross-entropy Datum that trains on the LAST assistant turn.
     All earlier turns are context (weight 0).
+    completion_weight scales the loss on the target tokens (default 1.0).
     Identical logic to train_sft_lora_tiny.messages_to_datum.
     """
     last_asst = next(
@@ -118,7 +120,7 @@ def _messages_to_datum(messages, tokenizer, max_seq_len: int, types):
     P, C         = len(prompt_ids), len(completion_ids)
     full         = prompt_ids + completion_ids
     N            = P + C - 1
-    raw_weights  = [0.0] * P + [1.0] * C
+    raw_weights  = [0.0] * P + [completion_weight] * C
     seq_weights  = raw_weights[1:]          # left-shift to align with targets
 
     return types.Datum(
@@ -140,9 +142,10 @@ def _build_rrr_datums(
     tokenizer,
     max_seq_len: int,
     types,
+    solve_token_weight: float = 0.0,
 ) -> List:
     """
-    Build TWO Tinker Datums from one successful RRR trajectory.
+    Build Tinker Datums from one successful RRR trajectory.
 
     Datum 1 – Reflection turn
       context : [user: problem][asst: solve][user: reflect_request]
@@ -153,7 +156,14 @@ def _build_rrr_datums(
                 [asst: reflect][user: retry_request]
       target  : [asst: retry]            ← weight 1.0
 
-    The initial solve is always context (weight 0) in both datums.
+    Datum 0 (optional) – Solve turn, added when solve_token_weight > 0
+      context : [user: problem]
+      target  : [asst: solve]            ← weight solve_token_weight
+      Giving the first-pass CoT a gradient signal means the model learns
+      not just to reflect and retry well, but to avoid the errors it
+      identifies — improving first-pass accuracy over training.
+      A weight < 1.0 (e.g. 0.3) is recommended because the solve was wrong;
+      we want a soft signal, not equal reinforcement of a bad solution.
     """
     solve_prompt_str  = build_solve_prompt(question, dataset)
     refl_request_str  = build_reflection_prompt(
@@ -177,6 +187,21 @@ def _build_rrr_datums(
     ]
 
     datums = []
+
+    # Datum 0: first-pass solve (optional, controlled by solve_token_weight)
+    if solve_token_weight > 0.0:
+        msgs_solve = [
+            {"role": "user",      "content": solve_prompt_str},
+            {"role": "assistant", "content": solve_text},
+        ]
+        try:
+            datums.append(_messages_to_datum(
+                msgs_solve, tokenizer, max_seq_len, types,
+                completion_weight=solve_token_weight,
+            ))
+        except Exception as exc:
+            print(f"  [rrr][warn] solve datum build skipped: {exc}")
+
     for msgs in (msgs_reflect, msgs_retry):
         try:
             datums.append(_messages_to_datum(msgs, tokenizer, max_seq_len, types))
@@ -348,6 +373,7 @@ def train_rrr(
     sampler_refresh_every: int = 10,        # push weights to sampler every N steps
     # ── Reflection mode ──────────────────────────────────────────────────────
     reflection_mode: str      = "plan",     # "plan" | "full" | "tail"
+    solve_token_weight: float = 0.0,        # >0 gives first-pass CoT a gradient signal
     # ── Decoding ─────────────────────────────────────────────────────────────
     solve_max_tokens: int     = 512,
     reflect_max_tokens: int   = 192,
@@ -592,6 +618,7 @@ def train_rrr(
                         solve_text=solve_text, reflect_text=reflect_text,
                         retry_text=retry_text, reflection_mode=reflection_mode,
                         tokenizer=tokenizer, max_seq_len=max_seq_len, types=types,
+                        solve_token_weight=solve_token_weight,
                     )
                     step_datums.extend(datums)
                     total_successes += 1

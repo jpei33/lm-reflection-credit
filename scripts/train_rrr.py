@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
                     default="plan",
                     help="Which reflection prompt style to use. "
                          "Should match the SFT checkpoint's training mode.")
+    ap.add_argument("--solve_token_weight", type=float, default=0.0,
+                    help="Weight for first-pass solve tokens in the training loss. "
+                         "0.0 (default) = solve is context only, no gradient. "
+                         "0.3 = soft signal that nudges the first-pass CoT to avoid "
+                         "errors the model identifies in its own reflections.")
 
     # ── Decoding ─────────────────────────────────────────────────────────────
     ap.add_argument("--solve_max_tokens",   type=int,   default=512)
@@ -150,6 +155,7 @@ def main() -> None:
         problems_per_step     = args.problems_per_step,
         sampler_refresh_every = args.sampler_refresh_every,
         reflection_mode       = args.reflection_mode,
+        solve_token_weight    = args.solve_token_weight,
         solve_max_tokens      = args.solve_max_tokens,
         reflect_max_tokens    = args.reflect_max_tokens,
         retry_max_tokens      = args.retry_max_tokens,

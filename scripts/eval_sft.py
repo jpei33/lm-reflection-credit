@@ -203,6 +203,8 @@ def parse_args() -> argparse.Namespace:
     # -- Output --
     ap.add_argument("--output_dir", default="results/runs",
                     help="Directory to write output JSONL files.")
+    # --output_suffix is derived automatically from --mode (non-baseline modes
+    # append _{mode} to the filename).  Pass an explicit value to override.
     ap.add_argument("--resume", action="store_true",
                     help="Resume interrupted eval (skip already-written examples).")
     ap.add_argument("--checkpoint_every", type=int, default=10)
@@ -329,7 +331,11 @@ def main() -> None:
             print(f"[warn] {input_path} not found - skipping {ds_name}.")
             continue
 
-        output_path = output_dir / f"{args.run_name}_{ds_name}.jsonl"
+        # baseline_solve keeps the plain {run_name}_{dataset} name for backward
+        # compatibility; every other mode appends _{mode} automatically so results
+        # from different eval strategies never overwrite each other.
+        mode_suffix = "" if args.mode == "baseline_solve" else f"_{args.mode}"
+        output_path = output_dir / f"{args.run_name}{mode_suffix}_{ds_name}.jsonl"
         print(f"\n[eval] dataset={ds_name}  input={input_path}  output={output_path}")
 
         run_rrr_eval(
