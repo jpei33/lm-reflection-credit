@@ -150,13 +150,74 @@ def avg_tokens(rows: List[dict]) -> float:
     return total / len(rows)
 
 
-def difficulty_breakdown(rows: List[dict]) -> Dict[str, Tuple[float, int]]:
+def _gsm8k_difficulty_tier(n_steps: int, t1: int = 2, t2: int = 4) -> str:
+    """Map arithmetic step count to Easy/Medium/Hard tier."""
+    if n_steps <= t1:
+        return "Easy"
+    if n_steps <= t2:
+        return "Medium"
+    return "Hard"
+
+
+def _build_gsm8k_tier_map(repo_root: Path, seed: int = 0) -> Dict[str, str]:
+    """
+    Build question → difficulty-tier mapping for GSM8K by counting
+    <<a op b=c>> annotations in the reference solution.
+    Tries gsm8k_test_200_seed{seed}.jsonl first, falls back to gsm8k_test.jsonl.
+    """
+    import re as _re
+    data_dir = repo_root / "data" / "processed"
+    candidates = [
+        data_dir / f"gsm8k_test_200_seed{seed}.jsonl",
+        data_dir / "gsm8k_test.jsonl",
+    ]
+    src_file = next((p for p in candidates if p.exists()), None)
+    if src_file is None:
+        return {}
+    tier_map: Dict[str, str] = {}
+    with open(src_file, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            q   = rec.get("question", "").strip()
+            ans = rec.get("answer", "")
+            n_steps = len(_re.findall(r"<<[^>]+=\d", ans))
+            tier_map[q] = _gsm8k_difficulty_tier(n_steps)
+    return tier_map
+
+
+def difficulty_breakdown(rows: List[dict], gsm8k_tier_map: Optional[Dict[str, str]] = None) -> Dict[str, Tuple[float, int]]:
     buckets: Dict[str, List[dict]] = defaultdict(list)
     for r in rows:
-        lvl = str((r.get("meta") or {}).get("level", "?"))
-        buckets[lvl].append(r)
+        meta = r.get("meta") or {}
+        lvl  = meta.get("level", "")
+        # Normalise MATH levels: "Level 1" -> "1"
+        if isinstance(lvl, str) and lvl.startswith("Level "):
+            lvl = lvl[6:]
+        # GSM8K has no native level — look up via tier map
+        if not lvl and gsm8k_tier_map is not None:
+            q = (r.get("question") or "").strip()
+            lvl = gsm8k_tier_map.get(q, "?")
+        if not lvl:
+            lvl = "?"
+        buckets[str(lvl)].append(r)
+
+    _tier_order = {"Easy": 0, "Medium": 1, "Hard": 2}
+
+    def _sort_key(x: str):
+        if x in _tier_order:
+            return (0, _tier_order[x])
+        if x.isdigit():
+            return (1, int(x))
+        return (2, x)
+
     result = {}
-    for lvl in sorted(buckets, key=lambda x: (x.isdigit(), int(x) if x.isdigit() else x)):
+    for lvl in sorted(buckets, key=_sort_key):
         result[lvl] = (system_acc(buckets[lvl]), len(buckets[lvl]))
     return result
 
@@ -236,6 +297,7 @@ def report(
     phases_present: List[str],
     multi_seed_data: Optional[Dict[str, Dict[str, List[Optional[List[dict]]]]]] = None,
     bon_data: Optional[Dict[int, Dict[str, float]]] = None,  # {N: {label: acc}}
+    gsm8k_tier_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     phase_data:       phase_data[phase][label] = rows (single seed, primary)
@@ -406,13 +468,25 @@ def report(
     for phase_rows in phase_data.values():
         for rows in phase_rows.values():
             if rows:
-                for lvl in difficulty_breakdown(rows):
+                for lvl in difficulty_breakdown(rows, gsm8k_tier_map):
                     all_levels.add(lvl)
 
     if all_levels:
-        lvl_sorted = sorted(all_levels, key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else x))
+        _tier_order = {"Easy": 0, "Medium": 1, "Hard": 2}
+
+        def _lvl_sort(x: str):
+            if x in _tier_order:
+                return (0, _tier_order[x], x)
+            if x.isdigit():
+                return (1, int(x), x)
+            return (2, 0, x)
+
+        lvl_sorted = sorted(all_levels, key=_lvl_sort)
         col_w2 = 9
-        hdr3 = f"  {'Condition':<24}" + "".join(f"{'L'+l:>{col_w2}}" for l in lvl_sorted)
+        # For numeric MATH levels prefix with "L"; for named GSM8K tiers use as-is
+        def _lvl_hdr(l: str) -> str:
+            return f"L{l}" if l.isdigit() else l
+        hdr3 = f"  {'Condition':<24}" + "".join(f"{_lvl_hdr(l):>{col_w2}}" for l in lvl_sorted)
         print(hdr3)
         print("  " + "-" * (len(hdr3) - 2))
 
@@ -422,7 +496,7 @@ def report(
             rows = rows_by_phase.get("grpo") or rows_by_phase.get("rlvr") or rows_by_phase.get("sft")
             if not rows:
                 continue
-            bd = difficulty_breakdown(rows)
+            bd = difficulty_breakdown(rows, gsm8k_tier_map)
             row_str = f"  {label:<24}"
             for lvl in lvl_sorted:
                 if lvl in bd:
@@ -546,12 +620,16 @@ def main() -> None:
             print(f"       Run eval_sft.py for each condition first.")
             continue
 
+        # ── GSM8K difficulty tier map ─────────────────────────────────────────
+        gsm8k_tier_map = _build_gsm8k_tier_map(_REPO_ROOT, seed=primary_seed) if ds == "gsm8k" else None
+
         report(
             phase_data=phase_data,
             dataset=ds,
             phases_present=phases_present,
             multi_seed_data=ms_data if multi_seed else None,
             bon_data=bon_data if bon_data else None,
+            gsm8k_tier_map=gsm8k_tier_map,
         )
 
     print()

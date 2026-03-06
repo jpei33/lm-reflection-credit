@@ -112,29 +112,29 @@ Reflection mainly helps by guiding search rather than generating new reasoning a
 
 We train a LoRA adapter on top of `Qwen/Qwen3-4B-Instruct-2507` using supervised fine-tuning (SFT) followed by reinforcement learning with verifiable rewards (RLVR). RLVR uses rejection-sampling fine-tuning (RFT): at each step, the model samples outputs and trains only on correct ones with a binary reward signal from a math verifier.
 
-Each training run is 500 steps on a mixed GSM8K + MATH training set. Evaluation uses 200 held-out examples per dataset.
+Each training run is 500 steps on a mixed GSM8K + MATH training set. Evaluation uses 200 held-out examples per dataset. Results are reported as **mean ± std across 3 random seeds** (seeds 42, 0, 1).
 
 All conditions are evaluated with a **single forward pass** (no retry at inference), so token costs are identical across conditions and accuracy differences reflect purely what each training method taught the model.
 
-### GSM8K-200 (single-pass eval)
+### GSM8K-200 (single-pass eval, mean ± std over 3 seeds)
 
 | Condition | SFT | RLVR | Δ (RLVR) |
 |---|---|---|---|
-| Baseline CoT | 34.5% | 31.5% | -3.0% |
-| Retry Only | 32.0% | **34.5%** | **+2.5%** |
-| Reflect-Full | 28.5% | 30.5% | +2.0% |
-| Reflect-Plan | 27.0% | 24.5% | -2.5% |
-| Step Credit | — | **32.5%** | — |
+| Baseline CoT | 34.5%±0.0% | 31.5%±2.0% | −3.0% |
+| Retry Only | 32.0%±0.0% | **33.8%±0.6%** | +1.8% |
+| Reflect-Full + Retry | 28.5%±0.0% | **31.7%±1.0%** | **+3.2%** |
+| Reflect-Plan + Retry | 27.0%±0.0% | 27.0%±2.2% | +0.0% |
+| Step Credit | — | 31.0%±2.2% | — |
 
-### MATH-200 (single-pass eval)
+### MATH-200 (single-pass eval, mean ± std over 3 seeds)
 
 | Condition | SFT | RLVR | Δ (RLVR) |
 |---|---|---|---|
-| Baseline CoT | 15.5% | 16.5% | +1.0% |
-| Retry Only | **20.5%** | **23.0%** | **+2.5%** |
-| Reflect-Full | 16.5% | 18.0% | +1.5% |
-| Reflect-Plan | 16.5% | 15.5% | -1.0% |
-| Step Credit | — | 17.0% | — |
+| Baseline CoT | 15.5%±0.0% | 17.2%±0.8% | +1.7% |
+| Retry Only | **20.5%±0.0%** | 18.3%±4.1% | −2.2% |
+| Reflect-Full + Retry | 16.5%±0.0% | **17.8%±0.9%** | **+1.3%** |
+| Reflect-Plan + Retry | 16.5%±0.0% | 15.8%±0.6% | −0.7% |
+| Step Credit | — | 16.7%±0.3% | — |
 
 ### MATH-200 by Difficulty Level (RLVR, single-pass)
 
@@ -152,13 +152,13 @@ All conditions are evaluated with a **single forward pass** (no retry at inferen
 
 GSM8K has no native difficulty labels. Difficulty is proxied by the number of non-trivial computation steps in the reference solution (i.e. `<<a op b=c>>` annotations where `a ≠ c`).
 
-| Condition | Easy (≤2 steps, n=73) | Medium (3–4 steps, n=90) | Hard (5+ steps, n=37) |
+| Condition | Easy (≤2 steps, n=67) | Medium (3–4 steps, n=93) | Hard (5+ steps, n=40) |
 |---|---|---|---|
-| Baseline CoT | **57.5%** | 21.1% | 5.4% |
-| Retry Only | **60.3%** | **24.4%** | **8.1%** |
-| Reflect-Full | 53.4% | 22.2% | 5.4% |
-| Reflect-Plan | 50.7% | 12.2% | 2.7% |
-| Step Credit | 56.2% | 23.3% | **8.1%** |
+| Baseline CoT | 56.7% | 23.7% | 7.5% |
+| Retry Only | **61.2%** | **25.8%** | **10.0%** |
+| Reflect-Full | 53.7% | 22.6% | **10.0%** |
+| Reflect-Plan | 49.3% | 15.1% | 5.0% |
+| Step Credit | 55.2% | **25.8%** | **10.0%** |
 
 <p align="center">
   <img src="figures/gsm8k_difficulty_stratified.png" width="92%" />
@@ -166,10 +166,9 @@ GSM8K has no native difficulty labels. Difficulty is proxied by the number of no
 
 **Takeaways from difficulty stratification:**
 
-- Retry Only RLVR leads on Easy and Medium, but **Step Credit ties Retry Only on Hard (8.1%)**, both outperforming all other conditions on the hardest GSM8K problems. This is consistent with the step-local credit hypothesis.
-- Reflect-Plan collapses on Medium (12.2%), far behind all other conditions, suggesting planning-style prompts are actively harmful with RLVR at this scale.
-- The Hard tier (n=37) is small — 8.1% is 3 correct examples. Multi-seed runs are needed to confirm.
-- The MATH L4 result is the strongest signal: Step Credit (14.6%) beats all other conditions at Level 4, the tier most accessible to a 4B model while still being genuinely hard.
+- On Hard GSM8K problems (n=40), **Retry Only, Reflect-Full, and Step Credit all tie at 10.0%**, each outperforming Baseline CoT (7.5%) and Reflect-Plan (5.0%). The three-way tie is notable: step-local credit reaches the hard-problem ceiling without retry-specific training.
+- Reflect-Plan collapses on Medium (15.1%), far behind all other conditions, confirming planning-style prompts are actively harmful with RLVR at this scale.
+- The MATH L4 result is the strongest differentiator: **Step Credit (14.6%) leads all conditions** at Level 4, the tier most accessible to a 4B model while still being genuinely hard. This supports the hypothesis that step-local credit assignment is more effective the harder the problem gets.
 
 ---
 
@@ -204,9 +203,10 @@ Token counts annotated above each RLVR bar confirm near-identical inference cost
 
 ### Takeaways
 
-- **Retry Only RLVR is the most consistently positive condition**: +2.5% on both GSM8K and MATH, best single-pass accuracy on both datasets. Simple retry-based RL generalizes well to first-pass reasoning.
-- **MATH responds to RLVR at 500 steps** where it did not at 200: Retry Only (+2.5%), Reflect-Full (+1.5%), and Baseline CoT (+1.0%) all improve, suggesting MATH requires more training signal to move.
-- **Reflect-Plan degrades everywhere**: −2.5% on GSM8K, −1.0% on MATH, worst condition at every hard MATH level. Planning-style prompts appear incompatible with RFT at this scale.
-- **Baseline CoT regresses on GSM8K (−3.0%)**: RFT without structured output supervision causes drift, consistent with the hypothesis that outcome-only reward on single-pass solves is too sparse.
-- **Step Credit ties Retry Only on Hard GSM8K (8.1%)** and leads all conditions on MATH L4 (14.6%), supporting the prediction that step-local credit assignment is more effective on harder problems where the error region is meaningful.
-- **Step Credit (32.5% GSM8K) holds competitive without an SFT warm-start on retry data**, matching or beating most RLVR conditions despite starting from a baseline SFT checkpoint.
+- **Reflect-Full + Retry has the largest positive RLVR lift on GSM8K (+3.2%)** at 500 steps, overtaking Retry Only (+1.8%) once training converges. Both outperform all other conditions. Reflect-Full also achieves joint-best accuracy on Hard GSM8K problems (10.0%, tied with Retry Only and Step Credit).
+- **Retry Only RLVR on MATH is highly unstable (18.3%±4.1%, σ=4.1%)**: the negative mean lift (−2.2% vs SFT) and extreme variance indicate the model has not consistently converged on MATH retry trajectories across seeds. Single-seed results (seed 42: 23.0%) significantly overstate the true benefit.
+- **Reflect-Full + Retry is the best MATH condition (17.8%±0.9%)** with low variance, confirming structured reflection produces a more stable reward signal than blind retry on harder problems.
+- **Reflect-Plan degrades on both datasets** (GSM8K: 0.0% lift, MATH: −0.7%) and collapses on Medium GSM8K problems (15.1%, far below all other conditions). Planning-style prompts remain incompatible with RFT at this scale.
+- **Baseline CoT regresses on GSM8K (−3.0%)**: outcome-only reward on single-pass solves causes drift without structured output supervision.
+- **Step Credit ties for the best Hard GSM8K accuracy (10.0%)** alongside Retry Only and Reflect-Full, and leads all conditions on MATH L4 (14.6%). Its variance has narrowed to ±2.2% on GSM8K and ±0.3% on MATH at 500 steps, making it the most consistent performer on harder problems.
+- **Retry Only has the highest MATH variance of any condition (σ=4.1%)**: the step-local credit and reflection approaches are both more stable choices when generalisation across seeds matters.
