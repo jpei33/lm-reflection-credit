@@ -114,51 +114,79 @@ We train a LoRA adapter on top of `Qwen/Qwen3-4B-Instruct-2507` using supervised
 
 Each training run is 500 steps on a mixed GSM8K + MATH training set. Evaluation uses 200 held-out examples per dataset. Results are reported as **mean ± std across 3 random seeds** (seeds 42, 0, 1).
 
-All conditions are evaluated with a **single forward pass** (no retry at inference), so token costs are identical across conditions and accuracy differences reflect purely what each training method taught the model.
+All conditions are first evaluated with a **single forward pass** (no retry at inference) to isolate the quality of what each training method taught the model, then re-evaluated in **native mode** (with each model's trained retry/reflect strategy enabled) to measure the full system benefit.
 
-### GSM8K-200 (single-pass eval, mean ± std over 3 seeds)
+### GSM8K-200 (first-try / single-pass, mean ± std over 3 seeds)
 
 | Condition | SFT | RLVR | Δ (RLVR) |
 |---|---|---|---|
 | Baseline CoT | 34.5%±0.0% | 31.5%±2.0% | −3.0% |
-| Retry Only | 32.0%±0.0% | **33.8%±0.6%** | +1.8% |
-| Reflect-Full + Retry | 28.5%±0.0% | **31.7%±1.0%** | **+3.2%** |
-| Reflect-Plan + Retry | 27.0%±0.0% | 27.0%±2.2% | +0.0% |
-| Step Credit | — | 31.0%±2.2% | — |
+| Retry Only | 32.0%±0.0% | **33.3%±0.8%** | +1.3% |
+| Reflect-Full + Retry | 28.5%±0.0% | **31.5%±0.9%** | **+3.0%** |
+| Reflect-Plan + Retry | 27.0%±0.0% | 27.0%±2.3% | +0.0% |
+| Step Credit | — | 30.2%±2.4% | — |
 
-### MATH-200 (single-pass eval, mean ± std over 3 seeds)
+### MATH-200 (first-try / single-pass, mean ± std over 3 seeds)
 
 | Condition | SFT | RLVR | Δ (RLVR) |
 |---|---|---|---|
 | Baseline CoT | 15.5%±0.0% | 17.2%±0.8% | +1.7% |
 | Retry Only | **20.5%±0.0%** | 18.3%±4.1% | −2.2% |
-| Reflect-Full + Retry | 16.5%±0.0% | **17.8%±0.9%** | **+1.3%** |
-| Reflect-Plan + Retry | 16.5%±0.0% | 15.8%±0.6% | −0.7% |
-| Step Credit | — | 16.7%±0.3% | — |
+| Reflect-Full + Retry | 16.5%±0.0% | **18.5%±0.5%** | **+2.0%** |
+| Reflect-Plan + Retry | 16.5%±0.0% | 15.8%±0.8% | −0.7% |
+| Step Credit | — | 16.8%±0.6% | — |
 
-### MATH-200 by Difficulty Level (RLVR, single-pass)
+---
+
+### Native-Mode Evaluation (with retry/reflect enabled, mean ± std over 3 seeds)
+
+Each model is re-evaluated using its trained inference strategy: Retry Only and Step Credit use blind retry; Reflect-Full and Reflect-Plan use reflect-then-retry. System accuracy = first-try **OR** retry correct. Baseline CoT has no retry so its system accuracy equals first-try.
+
+#### GSM8K-200 (native-mode system accuracy)
+
+| Condition | RLVR (system) | RLVR (first-try) | Retry lift |
+|---|---|---|---|
+| Baseline CoT | 31.5%±2.0% | 31.5%±2.0% | — |
+| Retry Only | **34.5%±1.3%** | 33.3%±0.8% | +1.2% |
+| Reflect-Full + Retry | **32.5%±0.0%** | 31.5%±0.9% | +1.0% |
+| Reflect-Plan + Retry | 27.7%±2.0% | 27.0%±2.3% | +0.7% |
+| Step Credit | 31.3%±2.1% | 30.2%±2.4% | +1.1% |
+
+#### MATH-200 (native-mode system accuracy)
+
+| Condition | RLVR (system) | RLVR (first-try) | Retry lift |
+|---|---|---|---|
+| Baseline CoT | 17.2%±0.8% | 17.2%±0.8% | — |
+| Retry Only | 19.2%±3.3% | 18.3%±4.1% | +0.9% |
+| Reflect-Full + Retry | **18.7%±0.3%** | 18.5%±0.5% | +0.2% |
+| Reflect-Plan + Retry | 16.2%±0.8% | 15.8%±0.8% | +0.4% |
+| Step Credit | 17.3%±0.6% | 16.8%±0.6% | +0.5% |
+
+---
+
+### MATH-200 by Difficulty Level (RLVR, native-mode)
 
 | Condition | L1 | L2 | L3 | L4 | L5 |
 |---|---|---|---|---|---|
 | Baseline CoT | 38.1% | 30.0% | 19.2% | 12.2% | 1.8% |
 | Retry Only | **52.4%** | **36.7%** | **25.0%** | 12.2% | **10.7%** |
-| Reflect-Full | 47.6% | 30.0% | 21.2% | 9.8% | 3.6% |
+| Reflect-Full | 47.6% | 33.3% | 21.2% | 9.8% | 3.6% |
 | Reflect-Plan | 42.9% | 30.0% | 19.2% | 4.9% | 1.8% |
 | Step Credit | 38.1% | 30.0% | 19.2% | **14.6%** | 1.8% |
 
 ---
 
-### GSM8K-200 by Difficulty (RLVR, single-pass)
+### GSM8K-200 by Difficulty (RLVR, native-mode)
 
 GSM8K has no native difficulty labels. Difficulty is proxied by the number of non-trivial computation steps in the reference solution (i.e. `<<a op b=c>>` annotations where `a ≠ c`).
 
 | Condition | Easy (≤2 steps, n=67) | Medium (3–4 steps, n=93) | Hard (5+ steps, n=40) |
 |---|---|---|---|
 | Baseline CoT | 56.7% | 23.7% | 7.5% |
-| Retry Only | **61.2%** | **25.8%** | **10.0%** |
-| Reflect-Full | 53.7% | 22.6% | **10.0%** |
-| Reflect-Plan | 49.3% | 15.1% | 5.0% |
-| Step Credit | 55.2% | **25.8%** | **10.0%** |
+| Retry Only | **61.2%** | 24.7% | 10.0% |
+| Reflect-Full | 55.2% | 24.7% | **12.5%** |
+| Reflect-Plan | 50.7% | 15.1% | 7.5% |
+| Step Credit | 56.7% | **25.8%** | 10.0% |
 
 <p align="center">
   <img src="figures/gsm8k_difficulty_stratified.png" width="92%" />
@@ -166,9 +194,9 @@ GSM8K has no native difficulty labels. Difficulty is proxied by the number of no
 
 **Takeaways from difficulty stratification:**
 
-- On Hard GSM8K problems (n=40), **Retry Only, Reflect-Full, and Step Credit all tie at 10.0%**, each outperforming Baseline CoT (7.5%) and Reflect-Plan (5.0%). The three-way tie is notable: step-local credit reaches the hard-problem ceiling without retry-specific training.
-- Reflect-Plan collapses on Medium (15.1%), far behind all other conditions, confirming planning-style prompts are actively harmful with RLVR at this scale.
-- The MATH L4 result is the strongest differentiator: **Step Credit (14.6%) leads all conditions** at Level 4, the tier most accessible to a 4B model while still being genuinely hard. This supports the hypothesis that step-local credit assignment is more effective the harder the problem gets.
+- **Reflect-Full now leads on Hard GSM8K (12.5%)**, pulling ahead of Retry Only and Step Credit (both 10.0%) once the reflect+retry mechanism is activated at inference. This is only visible in native-mode eval — under single-pass, all three tied at ~10%.
+- Reflect-Plan collapses on Medium GSM8K (15.1%), far behind all other conditions, confirming planning-style prompts are actively harmful with RLVR at this scale.
+- **Step Credit leads MATH L4 (14.6%)**, the tier most accessible to a 4B model while still genuinely hard. This is consistent with step-local credit producing better gradient signal on harder problems where the error region is more localized.
 
 ---
 

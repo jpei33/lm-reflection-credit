@@ -205,6 +205,10 @@ def parse_args() -> argparse.Namespace:
                     help="Directory to write output JSONL files.")
     # --output_suffix is derived automatically from --mode (non-baseline modes
     # append _{mode} to the filename).  Pass an explicit value to override.
+    ap.add_argument("--few_shot", action="store_true",
+                    help="Prepend few-shot examples to each reflection prompt.  "
+                         "Automatically appends '_fewshot' to the output filename "
+                         "so zero-shot and few-shot results are never mixed.")
     ap.add_argument("--resume", action="store_true",
                     help="Resume interrupted eval (skip already-written examples).")
     ap.add_argument("--checkpoint_every", type=int, default=10)
@@ -244,6 +248,7 @@ def main() -> None:
 |  no_reflect   : {str(eval_kwargs['no_reflect']):<36s}|
 |  retry_only   : {str(eval_kwargs['retry_only']):<36s}|
 |  refl_mode    : {eval_kwargs['reflection_mode']:<36s}|
+|  few_shot     : {str(args.few_shot):<36s}|
 |  dataset      : {args.dataset:<36s}|
 |  temperature  : {args.temperature:<36g}|
 +------------------------------------------------------+
@@ -334,8 +339,11 @@ def main() -> None:
         # baseline_solve keeps the plain {run_name}_{dataset} name for backward
         # compatibility; every other mode appends _{mode} automatically so results
         # from different eval strategies never overwrite each other.
+        # --few_shot additionally appends _fewshot so zero-shot and few-shot
+        # results are always written to separate files.
         mode_suffix = "" if args.mode == "baseline_solve" else f"_{args.mode}"
-        output_path = output_dir / f"{args.run_name}{mode_suffix}_{ds_name}.jsonl"
+        fewshot_suffix = "_fewshot" if args.few_shot else ""
+        output_path = output_dir / f"{args.run_name}{mode_suffix}{fewshot_suffix}_{ds_name}.jsonl"
         print(f"\n[eval] dataset={ds_name}  input={input_path}  output={output_path}")
 
         run_rrr_eval(
@@ -347,6 +355,7 @@ def main() -> None:
             reflect_cfg=reflect_cfg,
             retry_cfg=retry_cfg,
             seed=args.seed,
+            few_shot=args.few_shot,
             resume=args.resume,
             checkpoint_every=args.checkpoint_every,
             **eval_kwargs,

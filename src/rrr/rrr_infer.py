@@ -197,6 +197,109 @@ def loose_match(ex: dict, pred: Optional[str], gt: Optional[str]) -> bool:
 
 # --------- Prompts ---------
 
+# ---------------------------------------------------------------------------
+# Few-shot examples for reflection prompts
+# ---------------------------------------------------------------------------
+# Rules demonstrated in every example:
+#   - Exactly 3 output lines: ERROR_TYPE / LIKELY_STEP / FIX_PLAN
+#   - Zero digits or numbers in the reflection output
+#   - FIX_PLAN is one concrete, actionable sentence
+# Two examples per mode: one GSM8K-style arithmetic, one MATH-style algebra/formula
+
+_FEW_SHOT_FULL = """\
+Here are two examples of correct reflections:
+
+--- Example 1 ---
+Problem:
+A baker makes 24 muffins. She sells 15 at the morning market and 6 more in the afternoon. How many muffins are left?
+
+Model's previous solution:
+Morning sales: 15 muffins.
+Afternoon sales: 6 muffins.
+Remaining = 24 - 15 = 9 muffins.
+#### 9
+
+Model's parsed final answer: 9
+ERROR_TYPE: incomplete subtraction
+LIKELY_STEP: final subtraction
+FIX_PLAN: Subtract the combined total of all sales sessions from the starting count, not just one session's sales.
+
+--- Example 2 ---
+Problem:
+A train covers 120 miles at 60 mph, then 120 miles at 40 mph. What is the average speed for the whole journey?
+
+Model's previous solution:
+Speed on leg one = 60 mph, speed on leg two = 40 mph.
+Average speed = (60 + 40) / 2 = 50 mph.
+\\boxed{50}
+
+Model's parsed final answer: 50
+ERROR_TYPE: formula misapplication
+LIKELY_STEP: average speed calculation
+FIX_PLAN: Divide total distance by total elapsed time rather than taking the arithmetic mean of the two speeds.
+
+--- End Examples ---
+Now analyze this failed solution:
+"""
+
+_FEW_SHOT_PLAN = """\
+Here are two examples of correct reflections:
+
+--- Example 1 ---
+Problem:
+A baker makes 24 muffins. She sells 15 at the morning market and 6 more in the afternoon. How many muffins are left?
+
+Model's parsed final answer (may be wrong): 9
+ERROR_TYPE: incomplete subtraction
+LIKELY_STEP: computing total items removed
+FIX_PLAN: Identify every quantity that reduces the starting total, sum them, then subtract once from the initial count.
+
+--- Example 2 ---
+Problem:
+A train covers 120 miles at 60 mph, then 120 miles at 40 mph. What is the average speed for the whole journey?
+
+Model's parsed final answer (may be wrong): 50
+ERROR_TYPE: formula misapplication
+LIKELY_STEP: average speed calculation
+FIX_PLAN: Compute the ratio of total distance to total travel time rather than averaging the individual leg speeds.
+
+--- End Examples ---
+Now analyze this problem:
+"""
+
+_FEW_SHOT_TAIL = """\
+Here are two examples of correct reflections:
+
+--- Example 1 ---
+Problem:
+A baker makes 24 muffins. She sells 15 at the morning market and 6 more in the afternoon. How many muffins are left?
+
+Model's parsed final answer (may be wrong): 9
+Last lines of model work (may be wrong):
+Remaining = 24 - 15 = 9 muffins.
+#### 9
+
+ERROR_TYPE: incomplete subtraction
+LIKELY_STEP: final subtraction step
+FIX_PLAN: Account for all sales groups before computing the remainder, not just the first group.
+
+--- Example 2 ---
+Problem:
+A train covers 120 miles at 60 mph, then 120 miles at 40 mph. What is the average speed?
+
+Model's parsed final answer (may be wrong): 50
+Last lines of model work (may be wrong):
+Average speed = (60 + 40) / 2 = 50 mph.
+\\boxed{50}
+
+ERROR_TYPE: formula misapplication
+LIKELY_STEP: final average calculation
+FIX_PLAN: Replace the arithmetic mean of speeds with total distance divided by total travel time.
+
+--- End Examples ---
+Now diagnose this solution:
+"""
+
 def build_solve_prompt(question: str, dataset: str = "") -> str:
     dataset = (dataset or "").lower()
 
@@ -240,8 +343,10 @@ def build_reflection_prompt_full(
     question: str,
     solution: str,
     pred_final: Optional[str],
+    few_shot: bool = False,
 ) -> str:
     pf = _fmt_pred_final(pred_final)
+    few_shot_block = (_FEW_SHOT_FULL + "\n") if few_shot else ""
     return (
         "You are analyzing a failed math solution to improve the next attempt.\n"
         "CRITICAL RULES:\n"
@@ -252,7 +357,8 @@ def build_reflection_prompt_full(
         "ERROR_TYPE: <short>\n"
         "LIKELY_STEP: <step name or 'unknown'>\n"
         "FIX_PLAN: <one sentence>\n\n"
-        f"Problem:\n{question}\n\n"
+        + few_shot_block
+        + f"Problem:\n{question}\n\n"
         f"Model's previous solution:\n{solution}\n\n"
         f"Model's parsed final answer: {pf}\n"
     )
@@ -262,9 +368,11 @@ def build_reflection_prompt_tail(
     question: str,
     solution: str,
     pred_final: Optional[str],
+    few_shot: bool = False,
 ) -> str:
     pf = _fmt_pred_final(pred_final)
     tail = _tail_lines(solution, n_lines=6)
+    few_shot_block = (_FEW_SHOT_TAIL + "\n") if few_shot else ""
     return (
         "You are diagnosing why the model's final answer is likely wrong.\n"
         "CRITICAL RULES:\n"
@@ -275,7 +383,8 @@ def build_reflection_prompt_tail(
         "ERROR_TYPE: <short>\n"
         "LIKELY_STEP: <step name or 'unknown'>\n"
         "FIX_PLAN: <one sentence checklist of what to verify>\n\n"
-        f"Problem:\n{question}\n\n"
+        + few_shot_block
+        + f"Problem:\n{question}\n\n"
         f"Model's parsed final answer (may be wrong): {pf}\n\n"
         f"Last lines of model work (may be wrong):\n{tail}\n"
     )
@@ -284,8 +393,10 @@ def build_reflection_prompt_tail(
 def build_reflection_prompt_plan(
     question: str,
     pred_final: Optional[str],
+    few_shot: bool = False,
 ) -> str:
     pf = _fmt_pred_final(pred_final)
+    few_shot_block = (_FEW_SHOT_PLAN + "\n") if few_shot else ""
     return (
         "You will solve the problem again. First, write a short plan/checklist.\n"
         "CRITICAL RULES:\n"
@@ -296,7 +407,8 @@ def build_reflection_prompt_plan(
         "ERROR_TYPE: <most likely mistake category>\n"
         "LIKELY_STEP: <where mistakes often happen, or 'unknown'>\n"
         "FIX_PLAN: <one sentence checklist of verifications>\n\n"
-        f"Problem:\n{question}\n\n"
+        + few_shot_block
+        + f"Problem:\n{question}\n\n"
         f"Model's parsed final answer (may be wrong): {pf}\n"
     )
 
@@ -306,13 +418,14 @@ def build_reflection_prompt(
     question: str,
     solution: str,
     pred_final: Optional[str],
+    few_shot: bool = False,
 ) -> str:
     mode = (mode or "full").lower()
     if mode == "plan":
-        return build_reflection_prompt_plan(question, pred_final)
+        return build_reflection_prompt_plan(question, pred_final, few_shot=few_shot)
     if mode == "tail":
-        return build_reflection_prompt_tail(question, solution, pred_final)
-    return build_reflection_prompt_full(question, solution, pred_final)
+        return build_reflection_prompt_tail(question, solution, pred_final, few_shot=few_shot)
+    return build_reflection_prompt_full(question, solution, pred_final, few_shot=few_shot)
 
 
 
@@ -524,6 +637,7 @@ def run_rrr_eval(
     retry_only: bool = False,
     seed: int = 0,
     reflection_mode: str = "full",
+    few_shot: bool = False,
     # NEW robustness knobs:
     resume: bool = False,
     checkpoint_every: int = 10,
@@ -664,7 +778,7 @@ def run_rrr_eval(
                             print(f"[RRR]  -> wrong (loose), reflecting (mode={reflection_mode})", flush=True)
 
                             # Use pred1_loose (the model's parsed answer) in the reflection prompt
-                            refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose)
+                            refl_prompt = build_reflection_prompt(reflection_mode, q, sol1, pred1_loose, few_shot=few_shot)
                             refl_text, meta_r = gen.generate(
                                 refl_prompt,
                                 reflect_cfg,
