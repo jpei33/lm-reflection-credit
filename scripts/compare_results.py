@@ -18,6 +18,7 @@ Usage:
   python scripts\\compare_results.py --phase grpo           # GRPO only
   python scripts\\compare_results.py --phase stw            # Solve-token-weight RLVR variant only
   python scripts\\compare_results.py --phase 8b             # Larger model (Qwen3-8B) RLVR variant only
+  python scripts\\compare_results.py --phase fewshot        # Few-shot inference variant only
 
 Auto-discovery looks for JSONL files in results/runs/ matching each
 condition's known run-name pattern.
@@ -44,8 +45,9 @@ _CONDITIONS = [
         "sft":    "qwen3-4b-baseline_solve-r{rank}-seed{seed}",
         "rlvr":   "baseline_rlvr_solve-r{rank}-seed{seed}",
         "grpo":   "baseline_grpo_solve-r{rank}-seed{seed}",
-        "stw":    None,  # no STW variant for baseline
-        "8b":     None,  # no 8b variant for baseline
+        "stw":    None,     # no STW variant for baseline
+        "8b":     None,     # no 8b variant for baseline
+        "fewshot": None,    # no few-shot for non-reflection modes
         "eval_mode": "baseline_solve",
     },
     {
@@ -53,8 +55,9 @@ _CONDITIONS = [
         "sft":    "qwen3-4b-retry_only-r{rank}-seed{seed}",
         "rlvr":   "baseline_rlvr_retry-r{rank}-seed{seed}",
         "grpo":   "baseline_grpo_retry-r{rank}-seed{seed}",
-        "stw":    None,  # no STW variant for retry-only
-        "8b":     None,  # no 8b variant for retry-only
+        "stw":    None,     # no STW variant for retry-only
+        "8b":     None,     # no 8b variant for retry-only
+        "fewshot": None,    # no few-shot for retry-only (no reflection prompt)
         "eval_mode": "retry_only",
     },
     {
@@ -64,6 +67,8 @@ _CONDITIONS = [
         "grpo":   "rrr_grpo-full-r{rank}-seed{seed}",
         "stw":    "rrr-full-stw-r{rank}-seed{seed}",
         "8b":     "rrr-full-8b-r{rank}-seed{seed}",
+        # few-shot uses the same RLVR checkpoint, different inference prompt
+        "fewshot": "rrr-full-r{rank}-seed{seed}",
         "eval_mode": "reflect_full_retry",
     },
     {
@@ -73,6 +78,8 @@ _CONDITIONS = [
         "grpo":   "rrr_grpo-plan-r{rank}-seed{seed}",
         "stw":    "rrr-plan-stw-r{rank}-seed{seed}",
         "8b":     "rrr-plan-8b-r{rank}-seed{seed}",
+        # few-shot uses the same RLVR checkpoint, different inference prompt
+        "fewshot": "rrr-plan-r{rank}-seed{seed}",
         "eval_mode": "reflect_plan_retry",
     },
     {
@@ -82,11 +89,12 @@ _CONDITIONS = [
         "grpo":   None,  # not implemented in Phase 3
         "stw":    None,  # no STW variant for step-credit
         "8b":     None,  # no 8b variant for step-credit
+        "fewshot": None, # no few-shot for step-credit (no reflection prompt)
         "eval_mode": "retry_only",  # evaluated with blind retry (no reflection)
     },
 ]
 
-_PHASES = ["sft", "rlvr", "grpo", "stw", "8b"]
+_PHASES = ["sft", "rlvr", "grpo", "stw", "8b", "fewshot"]
 
 _REPO_ROOT   = Path(__file__).resolve().parent.parent
 _RESULTS_DIR = _REPO_ROOT / "results" / "runs"
@@ -120,9 +128,16 @@ def resolve_run_name(template: Optional[str], rank: int, seed: int) -> Optional[
 
 
 def find_file(results_dir: Path, run_name: Optional[str], dataset: str,
-              eval_mode: Optional[str] = None) -> Optional[Path]:
+              eval_mode: Optional[str] = None,
+              few_shot: bool = False) -> Optional[Path]:
     if run_name is None:
         return None
+    # Few-shot files: {run_name}_{eval_mode}_fewshot_{dataset}.jsonl
+    if few_shot and eval_mode and eval_mode != "baseline_solve":
+        p = results_dir / f"{run_name}_{eval_mode}_fewshot_{dataset}.jsonl"
+        if p.exists():
+            return p
+        return None  # don't fall back to zero-shot for few-shot phase
     # Try mode-suffixed filename first (new naming convention from eval_sft.py).
     # baseline_solve has no suffix, so skip the suffixed attempt for that mode.
     if eval_mode and eval_mode != "baseline_solve":
@@ -342,11 +357,12 @@ def report(
     # ── Overall accuracy table ───────────────────────────────────────────────
     col_w = 14 if use_multi_seed else 8
     hdr = f"  {'Condition':<24}"
-    if "sft"  in phases_present: hdr += f"{'SFT':>{col_w}}"
-    if "rlvr" in phases_present: hdr += f"{'RLVR':>{col_w}}  {'Δ(RLVR)':>8}"
-    if "stw"  in phases_present: hdr += f"{'STW':>{col_w}}  {'Δ(STW)':>8}"
-    if "grpo" in phases_present: hdr += f"{'GRPO':>{col_w}}  {'Δ(GRPO)':>8}"
-    if "8b"   in phases_present: hdr += f"{'8B-RLVR':>{col_w}}  {'Δ(8B)':>8}"
+    if "sft"     in phases_present: hdr += f"{'SFT':>{col_w}}"
+    if "rlvr"    in phases_present: hdr += f"{'RLVR':>{col_w}}  {'Δ(RLVR)':>8}"
+    if "stw"     in phases_present: hdr += f"{'STW':>{col_w}}  {'Δ(STW)':>8}"
+    if "grpo"    in phases_present: hdr += f"{'GRPO':>{col_w}}  {'Δ(GRPO)':>8}"
+    if "8b"      in phases_present: hdr += f"{'8B-RLVR':>{col_w}}  {'Δ(8B)':>8}"
+    if "fewshot" in phases_present: hdr += f"{'RLVR+FS':>{col_w}}  {'Δ(FS)':>8}"
     if bon_data:
         for n_val in sorted(bon_data.keys()):
             hdr += f"  {'BoN-'+str(n_val):>8}"
@@ -360,19 +376,21 @@ def report(
         rows_by_phase = {ph: phase_data.get(ph, {}).get(label) for ph in _PHASES}
 
         if use_multi_seed:
-            sft_mean,  sft_std  = _agg_system_acc(multi_seed_data.get("sft",  {}).get(label, []))
-            rlvr_mean, rlvr_std = _agg_system_acc(multi_seed_data.get("rlvr", {}).get(label, []))
-            stw_mean,  stw_std  = _agg_system_acc(multi_seed_data.get("stw",  {}).get(label, []))
-            grpo_mean, grpo_std = _agg_system_acc(multi_seed_data.get("grpo", {}).get(label, []))
-            b8_mean,   b8_std   = _agg_system_acc(multi_seed_data.get("8b",   {}).get(label, []))
-            sft_acc, rlvr_acc, stw_acc, grpo_acc, b8_acc = sft_mean, rlvr_mean, stw_mean, grpo_mean, b8_mean
+            sft_mean,  sft_std  = _agg_system_acc(multi_seed_data.get("sft",     {}).get(label, []))
+            rlvr_mean, rlvr_std = _agg_system_acc(multi_seed_data.get("rlvr",    {}).get(label, []))
+            stw_mean,  stw_std  = _agg_system_acc(multi_seed_data.get("stw",     {}).get(label, []))
+            grpo_mean, grpo_std = _agg_system_acc(multi_seed_data.get("grpo",    {}).get(label, []))
+            b8_mean,   b8_std   = _agg_system_acc(multi_seed_data.get("8b",      {}).get(label, []))
+            fs_mean,   fs_std   = _agg_system_acc(multi_seed_data.get("fewshot", {}).get(label, []))
+            sft_acc, rlvr_acc, stw_acc, grpo_acc, b8_acc, fs_acc = sft_mean, rlvr_mean, stw_mean, grpo_mean, b8_mean, fs_mean
         else:
-            sft_acc  = system_acc(rows_by_phase["sft"])        if rows_by_phase["sft"]          else None
-            rlvr_acc = system_acc(rows_by_phase["rlvr"])       if rows_by_phase["rlvr"]         else None
-            stw_acc  = system_acc(rows_by_phase.get("stw"))    if rows_by_phase.get("stw")      else None
-            grpo_acc = system_acc(rows_by_phase["grpo"])       if rows_by_phase["grpo"]         else None
-            b8_acc   = system_acc(rows_by_phase.get("8b"))     if rows_by_phase.get("8b")       else None
-            sft_std = rlvr_std = stw_std = grpo_std = b8_std = None
+            sft_acc  = system_acc(rows_by_phase["sft"])            if rows_by_phase["sft"]              else None
+            rlvr_acc = system_acc(rows_by_phase["rlvr"])           if rows_by_phase["rlvr"]             else None
+            stw_acc  = system_acc(rows_by_phase.get("stw"))        if rows_by_phase.get("stw")          else None
+            grpo_acc = system_acc(rows_by_phase["grpo"])           if rows_by_phase["grpo"]             else None
+            b8_acc   = system_acc(rows_by_phase.get("8b"))         if rows_by_phase.get("8b")           else None
+            fs_acc   = system_acc(rows_by_phase.get("fewshot"))    if rows_by_phase.get("fewshot")      else None
+            sft_std = rlvr_std = stw_std = grpo_std = b8_std = fs_std = None
 
         rlvr_delta = (rlvr_acc - sft_acc)  if (rlvr_acc is not None and sft_acc  is not None) else None
         # STW delta is vs RLVR (measures improvement from adding solve-token-weight)
@@ -380,21 +398,25 @@ def report(
         grpo_delta = (grpo_acc - sft_acc)  if (grpo_acc is not None and sft_acc  is not None) else None
         # 8B delta is vs 4B RLVR (measures scaling benefit)
         b8_delta   = (b8_acc   - rlvr_acc) if (b8_acc   is not None and rlvr_acc is not None) else None
+        # Few-shot delta is vs zero-shot RLVR (measures prompt engineering benefit)
+        fs_delta   = (fs_acc   - rlvr_acc) if (fs_acc   is not None and rlvr_acc is not None) else None
 
-        tok_rows = rows_by_phase.get("8b") or rows_by_phase.get("grpo") or rows_by_phase.get("stw") or rows_by_phase.get("rlvr") or rows_by_phase.get("sft") or []
+        tok_rows = rows_by_phase.get("8b") or rows_by_phase.get("grpo") or rows_by_phase.get("stw") or rows_by_phase.get("fewshot") or rows_by_phase.get("rlvr") or rows_by_phase.get("sft") or []
         tok = avg_tokens(tok_rows) if tok_rows else None
 
         row = f"  {label:<24}"
-        if "sft"  in phases_present:
+        if "sft"     in phases_present:
             row += f"  {_fmt_acc(sft_acc, sft_std if use_multi_seed else None):>{col_w}}"
-        if "rlvr" in phases_present:
+        if "rlvr"    in phases_present:
             row += f"  {_fmt_acc(rlvr_acc, rlvr_std if use_multi_seed else None):>{col_w}}  {_fmt_delta(rlvr_delta):>8}"
-        if "stw"  in phases_present:
+        if "stw"     in phases_present:
             row += f"  {_fmt_acc(stw_acc, stw_std if use_multi_seed else None):>{col_w}}  {_fmt_delta(stw_delta):>8}"
-        if "grpo" in phases_present:
+        if "grpo"    in phases_present:
             row += f"  {_fmt_acc(grpo_acc, grpo_std if use_multi_seed else None):>{col_w}}  {_fmt_delta(grpo_delta):>8}"
-        if "8b"   in phases_present:
+        if "8b"      in phases_present:
             row += f"  {_fmt_acc(b8_acc, b8_std if use_multi_seed else None):>{col_w}}  {_fmt_delta(b8_delta):>8}"
+        if "fewshot" in phases_present:
+            row += f"  {_fmt_acc(fs_acc, fs_std if use_multi_seed else None):>{col_w}}  {_fmt_delta(fs_delta):>8}"
         if bon_data:
             for n_val in sorted(bon_data.keys()):
                 bon_acc_val = bon_data[n_val].get(label)
@@ -460,6 +482,19 @@ def report(
             bar = ("+" if delta >= 0 else "-") * bar_filled
             print(f"    {label:<26}: {delta:>+7.1%}  {bar}")
 
+    if "rlvr" in phases_present and "fewshot" in phases_present:
+        print(f"\n  Few-shot lift over zero-shot RLVR (system accuracy):")
+        for cond in _CONDITIONS:
+            label = cond["label"]
+            rlvr_rows = phase_data.get("rlvr",    {}).get(label)
+            fs_rows   = phase_data.get("fewshot", {}).get(label)
+            if not rlvr_rows or not fs_rows:
+                continue
+            delta = system_acc(fs_rows) - system_acc(rlvr_rows)
+            bar_filled = round(abs(delta) * 30)
+            bar = ("+" if delta >= 0 else "-") * bar_filled
+            print(f"    {label:<26}: {delta:>+7.1%}  {bar}")
+
     if "sft" in phases_present and "grpo" in phases_present:
         print(f"\n  GRPO lift over SFT (system accuracy):")
         for cond in _CONDITIONS:
@@ -489,11 +524,12 @@ def report(
     # ── First-try accuracy breakdown ─────────────────────────────────────────
     print(f"\n  First-try accuracy (solve only, no retry):\n")
     hdr2 = f"  {'Condition':<24}"
-    if "sft"  in phases_present: hdr2 += f"{'SFT':>{col_w}}"
-    if "rlvr" in phases_present: hdr2 += f"{'RLVR':>{col_w}}  {'Δ(RLVR)':>8}"
-    if "stw"  in phases_present: hdr2 += f"{'STW':>{col_w}}  {'Δ(STW)':>8}"
-    if "grpo" in phases_present: hdr2 += f"{'GRPO':>{col_w}}  {'Δ(GRPO)':>8}"
-    if "8b"   in phases_present: hdr2 += f"{'8B-RLVR':>{col_w}}  {'Δ(8B)':>8}"
+    if "sft"     in phases_present: hdr2 += f"{'SFT':>{col_w}}"
+    if "rlvr"    in phases_present: hdr2 += f"{'RLVR':>{col_w}}  {'Δ(RLVR)':>8}"
+    if "stw"     in phases_present: hdr2 += f"{'STW':>{col_w}}  {'Δ(STW)':>8}"
+    if "grpo"    in phases_present: hdr2 += f"{'GRPO':>{col_w}}  {'Δ(GRPO)':>8}"
+    if "8b"      in phases_present: hdr2 += f"{'8B-RLVR':>{col_w}}  {'Δ(8B)':>8}"
+    if "fewshot" in phases_present: hdr2 += f"{'RLVR+FS':>{col_w}}  {'Δ(FS)':>8}"
     print(hdr2)
     print("  " + "-" * (len(hdr2) - 2))
 
@@ -502,35 +538,40 @@ def report(
         rows_by_phase = {ph: phase_data.get(ph, {}).get(label) for ph in _PHASES}
 
         if use_multi_seed:
-            sft_fa,  sft_fstd  = _agg_first_acc(multi_seed_data.get("sft",  {}).get(label, []))
-            rlvr_fa, rlvr_fstd = _agg_first_acc(multi_seed_data.get("rlvr", {}).get(label, []))
-            stw_fa,  stw_fstd  = _agg_first_acc(multi_seed_data.get("stw",  {}).get(label, []))
-            grpo_fa, grpo_fstd = _agg_first_acc(multi_seed_data.get("grpo", {}).get(label, []))
-            b8_fa,   b8_fstd   = _agg_first_acc(multi_seed_data.get("8b",   {}).get(label, []))
+            sft_fa,  sft_fstd  = _agg_first_acc(multi_seed_data.get("sft",     {}).get(label, []))
+            rlvr_fa, rlvr_fstd = _agg_first_acc(multi_seed_data.get("rlvr",    {}).get(label, []))
+            stw_fa,  stw_fstd  = _agg_first_acc(multi_seed_data.get("stw",     {}).get(label, []))
+            grpo_fa, grpo_fstd = _agg_first_acc(multi_seed_data.get("grpo",    {}).get(label, []))
+            b8_fa,   b8_fstd   = _agg_first_acc(multi_seed_data.get("8b",      {}).get(label, []))
+            fs_fa,   fs_fstd   = _agg_first_acc(multi_seed_data.get("fewshot", {}).get(label, []))
         else:
-            sft_fa  = first_acc(rows_by_phase["sft"])          if rows_by_phase["sft"]      else None
-            rlvr_fa = first_acc(rows_by_phase["rlvr"])         if rows_by_phase["rlvr"]     else None
-            stw_fa  = first_acc(rows_by_phase.get("stw"))      if rows_by_phase.get("stw")  else None
-            grpo_fa = first_acc(rows_by_phase["grpo"])         if rows_by_phase["grpo"]     else None
-            b8_fa   = first_acc(rows_by_phase.get("8b"))       if rows_by_phase.get("8b")   else None
-            sft_fstd = rlvr_fstd = stw_fstd = grpo_fstd = b8_fstd = None
+            sft_fa  = first_acc(rows_by_phase["sft"])               if rows_by_phase["sft"]          else None
+            rlvr_fa = first_acc(rows_by_phase["rlvr"])              if rows_by_phase["rlvr"]         else None
+            stw_fa  = first_acc(rows_by_phase.get("stw"))           if rows_by_phase.get("stw")      else None
+            grpo_fa = first_acc(rows_by_phase["grpo"])              if rows_by_phase["grpo"]         else None
+            b8_fa   = first_acc(rows_by_phase.get("8b"))            if rows_by_phase.get("8b")       else None
+            fs_fa   = first_acc(rows_by_phase.get("fewshot"))       if rows_by_phase.get("fewshot")  else None
+            sft_fstd = rlvr_fstd = stw_fstd = grpo_fstd = b8_fstd = fs_fstd = None
 
         rlvr_d = (rlvr_fa - sft_fa)  if (rlvr_fa is not None and sft_fa  is not None) else None
         stw_d  = (stw_fa  - rlvr_fa) if (stw_fa  is not None and rlvr_fa is not None) else None
         grpo_d = (grpo_fa - sft_fa)  if (grpo_fa is not None and sft_fa  is not None) else None
         b8_d   = (b8_fa   - rlvr_fa) if (b8_fa   is not None and rlvr_fa is not None) else None
+        fs_d   = (fs_fa   - rlvr_fa) if (fs_fa   is not None and rlvr_fa is not None) else None
 
         row = f"  {label:<24}"
-        if "sft"  in phases_present:
+        if "sft"     in phases_present:
             row += f"  {_fmt_acc(sft_fa, sft_fstd if use_multi_seed else None):>{col_w}}"
-        if "rlvr" in phases_present:
+        if "rlvr"    in phases_present:
             row += f"  {_fmt_acc(rlvr_fa, rlvr_fstd if use_multi_seed else None):>{col_w}}  {_fmt_delta(rlvr_d):>8}"
-        if "stw"  in phases_present:
+        if "stw"     in phases_present:
             row += f"  {_fmt_acc(stw_fa, stw_fstd if use_multi_seed else None):>{col_w}}  {_fmt_delta(stw_d):>8}"
-        if "grpo" in phases_present:
+        if "grpo"    in phases_present:
             row += f"  {_fmt_acc(grpo_fa, grpo_fstd if use_multi_seed else None):>{col_w}}  {_fmt_delta(grpo_d):>8}"
-        if "8b"   in phases_present:
+        if "8b"      in phases_present:
             row += f"  {_fmt_acc(b8_fa, b8_fstd if use_multi_seed else None):>{col_w}}  {_fmt_delta(b8_d):>8}"
+        if "fewshot" in phases_present:
+            row += f"  {_fmt_acc(fs_fa, fs_fstd if use_multi_seed else None):>{col_w}}  {_fmt_delta(fs_d):>8}"
         print(row)
 
     # ── Difficulty breakdown ─────────────────────────────────────────────────
@@ -591,7 +632,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--dataset",  default="both", choices=["gsm8k", "math", "both"])
     ap.add_argument("--rank",     type=int, default=8)
     ap.add_argument("--phase",    default="all",
-                    choices=["all", "sft", "rlvr", "grpo", "stw", "8b"],
+                    choices=["all", "sft", "rlvr", "grpo", "stw", "8b", "fewshot"],
                     help="Which phase(s) to include. 'all' auto-detects available files.")
     ap.add_argument("--results_dir", default=str(_RESULTS_DIR))
 
@@ -622,16 +663,17 @@ def main() -> None:
     for ds in datasets:
         # ── Primary seed phase data (used for delta calculations + BoN) ─────
         phase_data: Dict[str, Dict[str, Optional[List[dict]]]] = {
-            "sft": {}, "rlvr": {}, "grpo": {}, "stw": {}, "8b": {}
+            "sft": {}, "rlvr": {}, "grpo": {}, "stw": {}, "8b": {}, "fewshot": {}
         }
 
         # ── Multi-seed data: phase → label → [rows_per_seed] ─────────────────
         ms_data: Dict[str, Dict[str, List[Optional[List[dict]]]]] = {
-            "sft":  defaultdict(list),
-            "rlvr": defaultdict(list),
-            "grpo": defaultdict(list),
-            "stw":  defaultdict(list),
-            "8b":   defaultdict(list),
+            "sft":     defaultdict(list),
+            "rlvr":    defaultdict(list),
+            "grpo":    defaultdict(list),
+            "stw":     defaultdict(list),
+            "8b":      defaultdict(list),
+            "fewshot": defaultdict(list),
         }
 
         print(f"\n[load] Scanning {results_dir} for dataset={ds} ...")
@@ -646,19 +688,21 @@ def main() -> None:
 
                 for seed in args.seeds:
                     run_name = resolve_run_name(tmpl, args.rank, seed)
-                    fpath = find_file(results_dir, run_name, ds, eval_mode=eval_mode)
+                    fpath = find_file(results_dir, run_name, ds,
+                                      eval_mode=eval_mode,
+                                      few_shot=(phase == "fewshot"))
                     if fpath:
                         rows = load_jsonl(fpath)
                         ms_data[phase][label].append(rows)
                         if seed == primary_seed:
                             phase_data[phase][label] = rows
-                            print(f"  [load] [{phase:4s}] seed={seed} {label:<26} {len(rows):>4} rows")
+                            print(f"  [load] [{phase:7s}] seed={seed} {label:<26} {len(rows):>4} rows")
                     else:
                         ms_data[phase][label].append(None)
                         if seed == primary_seed:
                             phase_data[phase][label] = None
                             if run_name:
-                                print(f"  [miss] [{phase:4s}] seed={seed} {label:<26} ({run_name}_{ds}.jsonl)")
+                                print(f"  [miss] [{phase:7s}] seed={seed} {label:<26} ({run_name}_{ds}.jsonl)")
 
         # ── Best-of-N loading ────────────────────────────────────────────────
         bon_run = args.bon_run_name or f"qwen3-4b-baseline_solve-r{args.rank}-seed{primary_seed}"
