@@ -200,6 +200,41 @@ GSM8K has no native difficulty labels. Difficulty is proxied by the number of no
 
 ---
 
+## Phase 8: Solve Token Weight (STW)
+
+**Hypothesis:** RLVR on Reflect-Full degrades first-try accuracy slightly because the reward signal only activates on reflection+retry trajectories, weakening gradient pressure on the initial solve. Adding a small gradient weight (0.3) on first-pass solve tokens — **Solve Token Weight (STW)** — should act as a regularizer to preserve initial attempt quality while still rewarding the reflection mechanism.
+
+STW is only applied to **Reflect-Full** (the best-performing Phase 7 condition). Results are mean ± std over 3 seeds.
+
+### GSM8K-200 (native-mode system accuracy)
+
+| Condition | RLVR | STW | Δ(STW) |
+|---|---|---|---|
+| Reflect-Full + Retry | 32.5%±0.0% | 31.5%±0.5% | **−1.0%** |
+
+### MATH-200 (native-mode system accuracy)
+
+| Condition | RLVR | STW | Δ(STW) |
+|---|---|---|---|
+| Reflect-Full + Retry | 18.7%±0.3% | 17.8%±0.3% | **−0.8%** |
+
+### First-try accuracy (single-pass, no retry)
+
+| Condition | Dataset | RLVR | STW | Δ(STW) |
+|---|---|---|---|---|
+| Reflect-Full + Retry | GSM8K | 31.5%±0.9% | 30.8%±0.8% | −0.7% |
+| Reflect-Full + Retry | MATH | 18.5%±0.5% | 17.3%±0.8% | −1.2% |
+
+### Takeaways
+
+- **STW does not improve over vanilla RLVR** — system accuracy is consistently ~0.8–1.0% lower on both datasets.
+- **STW fails at its primary goal**: first-try accuracy also degrades (−0.7% GSM8K, −1.2% MATH), rather than being preserved. The added gradient on solve tokens does not successfully protect the initial-pass quality.
+- The most likely cause is **gradient conflict**: the model receives competing signals — one rewarding good first passes (STW) and one rewarding reflection+retry trajectories (RLVR) — resulting in slightly worse performance on both objectives simultaneously.
+- STW variance is low (±0.5% GSM8K, ±0.3% MATH), confirming the slight degradation is consistent across seeds rather than noise.
+- **STW is dropped from further phases.** Vanilla Reflect-Full RLVR remains the best training recipe going forward.
+
+---
+
 ### RLVR Training Dynamics
 
 The plot below shows rollout hit rate (fraction of training rollouts yielding a correct answer) smoothed over a 40-step window. Stars (★) mark the final held-out eval accuracy at step 500 for each condition.

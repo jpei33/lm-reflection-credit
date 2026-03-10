@@ -56,7 +56,7 @@ _CONDITIONS = [
         "rlvr":   "baseline_rlvr_retry-r{rank}-seed{seed}",
         "grpo":   "baseline_grpo_retry-r{rank}-seed{seed}",
         "stw":    None,     # no STW variant for retry-only
-        "8b":     None,     # no 8b variant for retry-only
+        "8b":     "baseline_rlvr_retry-8b-r{rank}-seed{seed}",  # 8B baseline comparison
         "fewshot": None,    # no few-shot for retry-only (no reflection prompt)
         "eval_mode": "retry_only",
     },
