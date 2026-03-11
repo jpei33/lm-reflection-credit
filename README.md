@@ -449,3 +449,129 @@ RLVR training with step-local credit degrades first-try accuracy relative to the
 This is itself a meaningful finding. RLVR training with step-level credit pressure appears to have collapsed the model's reasoning style — rather than learning better step attribution, the model learned to skip intermediate steps entirely, bypassing the credit mechanism. This provides a mechanistic explanation for the negative accuracy result: the step credit signal was not just noisy but counterproductive to the model's ability to generate multi-step solutions.
 
 **Implication for Step Credit as a method:** Reliable labeler accuracy is a precondition for step credit to function. The evaluation shows this precondition is violated in practice — not because the labeler is inaccurate, but because the training pressure itself destroys the step structure the labeler requires.
+
+
+---
+
+## Figures
+
+All figures are saved to `figures/`.
+
+### Figure 1 — RLVR Lift over SFT (`fig1_rlvr_delta.png`)
+
+![RLVR Delta](figures/fig1_rlvr_delta.png)
+
+RLVR lift (percentage points) over the SFT baseline for each training condition on GSM8K (left) and MATH (right). Positive bars (blue/green) indicate RLVR improves over SFT; negative bars (red/orange) indicate degradation. Retry Only and Reflect-Full + Retry show consistent positive lift on both datasets. Reflect-Plan + Retry and Step Credit show negative or near-zero lift, confirming these as failed conditions. Baseline CoT shows negative lift on GSM8K, suggesting the RL reward signal is too sparse for the simplest format.
+
+### Figure 2 — pass@k Curve (`fig2_passk_curve.png`)
+
+![pass@k Curve](figures/fig2_passk_curve.png)
+
+Oracle upper bound (pass@k, blue) and deployable majority vote (majority@k, orange) for the Baseline SFT checkpoint at temperature 0.7, sweeping k ∈ {1, 2, 3, 8, 16}. Coloured markers show RLVR trained model accuracy at compute-matched k values. On GSM8K, RLVR Retry Only (34.0%) and Reflect-Full (32.5%) both comfortably exceed majority@k at matched k (23.0%), ruling out inference-compute as the explanation for the gains. majority@k is nearly flat across all k on both datasets, indicating that the baseline model's errors are highly correlated — RLVR training changes the solution distribution, not just the token budget.
+
+### Figure 3 — Training Reward Curves (`fig3_training_curves.png`)
+
+![Training Curves](figures/fig3_training_curves.png)
+
+Fraction of rollouts with correct final answer (training reward) over the 500-step run, averaged across 3 seeds with ±1 std shading. Reflect-Full RLVR and Retry Only RLVR climb steadily. Reflect-Full GRPO (dashed) lags behind both RLVR conditions — consistent with the evaluation results and the within-group normalisation explanation: when most rollouts fail, GRPO's relative reward signal amplifies noise rather than signal.
+
+---
+
+## Qualitative Examples
+
+The following examples come from the MATH dataset, evaluated with the Reflect-Full format at inference time (pre-RLVR checkpoint). They illustrate the two qualitatively different outcomes the reflection mechanism produces.
+
+---
+
+### Example A — Reflection Helps
+
+**Problem:** If $f(x) = g(g(x)) - g(x)$ and $g(x) = 2x - 1$, find $f(3)$.
+
+**Ground truth:** 4
+
+---
+
+**First attempt** *(incorrect — the model computes g(5) correctly but truncates before subtracting g(3))*
+
+```
+f(3) = g(g(3)) - g(3)
+g(3) = 2·3 − 1 = 5
+f(3) = g(5) − 5
+g(5) = 2·5 − 1 = 9
+[solution truncated before final subtraction]
+#### 9
+```
+
+---
+
+**Reflection**
+
+```
+Likely step: 4
+Fix plan: Use g(5) = 9 instead of g(3) = 5 in the calculation.
+```
+
+The labeler correctly identifies that the error is at the substitution step (step 4), not in the arithmetic. The fix plan is accurate and minimal.
+
+---
+
+**Retry** *(correct)*
+
+```
+g(3) = 2(3) − 1 = 5
+f(3) = g(g(3)) − g(3) = g(5) − 5 = 9 − 5 = 4
+#### 4  ✓
+```
+
+The retry applies the reflection's fix directly. No new reasoning is needed — the model already had all components correct, it just failed to complete the final subtraction.
+
+**Why this works:** The error was a near-miss — all sub-computations were correct. The reflection mechanism detects the incomplete step and re-routes execution. This is the best-case scenario for structured reflection.
+
+---
+
+### Example B — Reflection Does Not Help
+
+**Problem:** Find the coefficient of $x$ when $(7 + 8x) - 3(2 + 6x + 2x^2) + 9(1 + 3x + 4x^2 + 12x^3) - 9(7 - x^2 - 8x^3 + 13x^4)$ is simplified.
+
+**Ground truth:** 17
+
+---
+
+**First attempt** *(incorrect)*
+
+```
+Distributing:
+  7 + 8x
+  −6 − 18x − 6x²
+  9 + 27x + 36x² + 108x³
+  −63 + 9x² + 72x³ − 117x⁴
+[truncated — arithmetic error in x-coefficient collection]
+#### 8
+```
+
+---
+
+**Reflection**
+
+```
+Likely step: None
+Fix plan: The problem seems to be incorrectly set up for simplification
+based on the provided model. It should be re-evaluated with proper
+distribution and combining of like terms.
+```
+
+The reflection fails to identify a specific step. The "Fix plan" is generic and non-actionable — it restates the problem rather than diagnosing the error.
+
+---
+
+**Retry** *(still incorrect)*
+
+```
+[Re-distributes all terms correctly but makes a different arithmetic error
+in summing the x-coefficients: 8 − 18 + 27 + 9 = 26 instead of 17]
+#### 26
+```
+
+**Why this fails:** The error was a pure arithmetic accumulation mistake across many terms — there is no single identifiable "wrong step". The reflection mechanism correctly says `Likely step: None` but cannot construct a useful fix plan for arithmetic errors of this kind. The retry produces a different wrong answer, showing the model retried with fresh sampling rather than targeted correction.
+
+**Takeaway:** Reflection adds most value for structural or reasoning errors (missing a step, wrong substitution) where the fix is localised. It adds little value for distributed arithmetic errors, where the correct fix requires recomputing every term independently — which the model does not reliably do even with a second chance.
