@@ -459,19 +459,25 @@ All figures are saved to `figures/`.
 
 ### Figure 1 — RLVR Lift over SFT (`fig1_rlvr_delta.png`)
 
-![RLVR Delta](figures/fig1_rlvr_delta.png)
+<p align="center">
+  <img src="figures/fig1_rlvr_delta.png" width="95%" />
+</p>
 
 RLVR lift (percentage points) over the SFT baseline for each training condition on GSM8K (left) and MATH (right). Positive bars (blue/green) indicate RLVR improves over SFT; negative bars (red/orange) indicate degradation. Retry Only and Reflect-Full + Retry show consistent positive lift on both datasets. Reflect-Plan + Retry and Step Credit show negative or near-zero lift, confirming these as failed conditions. Baseline CoT shows negative lift on GSM8K, suggesting the RL reward signal is too sparse for the simplest format.
 
 ### Figure 2 — pass@k Curve (`fig2_passk_curve.png`)
 
-![pass@k Curve](figures/fig2_passk_curve.png)
+<p align="center">
+  <img src="figures/fig2_passk_curve.png" width="95%" />
+</p>
 
 Oracle upper bound (pass@k, blue) and deployable majority vote (majority@k, orange) for the Baseline SFT checkpoint at temperature 0.7, sweeping k ∈ {1, 2, 3, 8, 16}. Coloured markers show RLVR trained model accuracy at compute-matched k values. On GSM8K, RLVR Retry Only (34.0%) and Reflect-Full (32.5%) both comfortably exceed majority@k at matched k (23.0%), ruling out inference-compute as the explanation for the gains. majority@k is nearly flat across all k on both datasets, indicating that the baseline model's errors are highly correlated — RLVR training changes the solution distribution, not just the token budget.
 
 ### Figure 3 — Training Reward Curves (`fig3_training_curves.png`)
 
-![Training Curves](figures/fig3_training_curves.png)
+<p align="center">
+  <img src="figures/fig3_training_curves.png" width="95%" />
+</p>
 
 Fraction of rollouts with correct final answer (training reward) over the 500-step run, averaged across 3 seeds with ±1 std shading. Reflect-Full RLVR and Retry Only RLVR climb steadily. Reflect-Full GRPO (dashed) lags behind both RLVR conditions — consistent with the evaluation results and the within-group normalisation explanation: when most rollouts fail, GRPO's relative reward signal amplifies noise rather than signal.
 
