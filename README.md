@@ -124,7 +124,9 @@ All conditions are first evaluated with a **single forward pass** (no retry at i
 | Retry Only | 32.0%±0.0% | **33.3%±0.8%** | +1.3% |
 | Reflect-Full + Retry | 28.5%±0.0% | **31.5%±0.9%** | **+3.0%** |
 | Reflect-Plan + Retry | 27.0%±0.0% | 27.0%±2.3% | +0.0% |
-| Step Credit | — | 30.2%±2.4% | — |
+| Step Credit | 32.0%±0.0%* | 30.2%±2.4% | −1.8% |
+
+*Step Credit SFT baseline reuses the Retry Only SFT checkpoint (same eval strategy: blind retry, no reflection).
 
 ### MATH-200 (first-try / single-pass, mean ± std over 3 seeds)
 
@@ -134,7 +136,7 @@ All conditions are first evaluated with a **single forward pass** (no retry at i
 | Retry Only | **20.5%±0.0%** | 18.3%±4.1% | −2.2% |
 | Reflect-Full + Retry | 16.5%±0.0% | **18.5%±0.5%** | **+2.0%** |
 | Reflect-Plan + Retry | 16.5%±0.0% | 15.8%±0.8% | −0.7% |
-| Step Credit | — | 16.8%±0.6% | — |
+| Step Credit | **20.5%±0.0%*** | 16.8%±0.6% | −3.7% |
 
 ---
 
@@ -204,19 +206,21 @@ GSM8K has no native difficulty labels. Difficulty is proxied by the number of no
 
 **Hypothesis:** RLVR on Reflect-Full degrades first-try accuracy slightly because the reward signal only activates on reflection+retry trajectories, weakening gradient pressure on the initial solve. Adding a small gradient weight (0.3) on first-pass solve tokens — **Solve Token Weight (STW)** — should act as a regularizer to preserve initial attempt quality while still rewarding the reflection mechanism.
 
-STW is only applied to **Reflect-Full** (the best-performing Phase 7 condition). Results are mean ± std over 3 seeds.
+STW is applied to both **Reflect-Full** and **Reflect-Plan** conditions. Results are mean ± std over 3 seeds.
 
 ### GSM8K-200 (native-mode system accuracy)
 
 | Condition | RLVR | STW | Δ(STW) |
 |---|---|---|---|
 | Reflect-Full + Retry | 32.5%±0.0% | 31.5%±0.5% | **−1.0%** |
+| Reflect-Plan + Retry | 27.7%±2.0% | 27.0%±0.0% | **−0.7%** |
 
 ### MATH-200 (native-mode system accuracy)
 
 | Condition | RLVR | STW | Δ(STW) |
 |---|---|---|---|
 | Reflect-Full + Retry | 18.7%±0.3% | 17.8%±0.3% | **−0.8%** |
+| Reflect-Plan + Retry | 16.2%±0.8% | 16.2%±0.0% | **+0.0%** |
 
 ### First-try accuracy (single-pass, no retry)
 
@@ -224,14 +228,17 @@ STW is only applied to **Reflect-Full** (the best-performing Phase 7 condition).
 |---|---|---|---|---|
 | Reflect-Full + Retry | GSM8K | 31.5%±0.9% | 30.8%±0.8% | −0.7% |
 | Reflect-Full + Retry | MATH | 18.5%±0.5% | 17.3%±0.8% | −1.2% |
+| Reflect-Plan + Retry | GSM8K | 27.0%±2.3% | 26.0%±0.0% | −1.0% |
+| Reflect-Plan + Retry | MATH | 15.8%±0.8% | 15.1%±0.0% | −0.7% |
 
 ### Takeaways
 
-- **STW does not improve over vanilla RLVR** — system accuracy is consistently ~0.8–1.0% lower on both datasets.
-- **STW fails at its primary goal**: first-try accuracy also degrades (−0.7% GSM8K, −1.2% MATH), rather than being preserved. The added gradient on solve tokens does not successfully protect the initial-pass quality.
-- The most likely cause is **gradient conflict**: the model receives competing signals — one rewarding good first passes (STW) and one rewarding reflection+retry trajectories (RLVR) — resulting in slightly worse performance on both objectives simultaneously.
-- STW variance is low (±0.5% GSM8K, ±0.3% MATH), confirming the slight degradation is consistent across seeds rather than noise.
-- **STW is dropped from further phases.** Vanilla Reflect-Full RLVR remains the best training recipe going forward.
+- **STW does not improve over vanilla RLVR** on either condition — system accuracy is flat or negative across both datasets and both reflection styles.
+- **STW fails at its primary goal for Reflect-Full**: first-try accuracy still degrades (−0.7% GSM8K, −1.2% MATH) rather than being preserved. The added gradient on solve tokens does not successfully protect initial-pass quality.
+- **STW has a mixed profile on Reflect-Plan**: system accuracy drops −0.7% on GSM8K but is exactly flat on MATH (+0.0%). However, first-try accuracy still degrades on both (−1.0% GSM8K, −0.7% MATH), so any system-level neutrality on MATH is not attributable to improved first passes.
+- The most likely cause is **gradient conflict**: competing signals — one rewarding good first passes (STW) and one rewarding reflection+retry trajectories (RLVR) — result in worse performance on both objectives simultaneously.
+- **STW strongly reduces variance**: Reflect-Plan drops from ±2.0% to ±0.0% on GSM8K system accuracy, and Reflect-Full holds ±0.3% on MATH. This stability comes at the cost of accuracy.
+- **STW is dropped from further phases.** Vanilla RLVR remains the best training recipe for both reflection conditions.
 
 ---
 
@@ -273,3 +280,172 @@ Token counts annotated above each RLVR bar confirm near-identical inference cost
 - **Baseline CoT regresses on GSM8K (−3.0%)**: outcome-only reward on single-pass solves causes drift without structured output supervision.
 - **Step Credit ties for the best Hard GSM8K accuracy (10.0%)** alongside Retry Only and Reflect-Full, and leads all conditions on MATH L4 (14.6%). Its variance has narrowed to ±2.2% on GSM8K and ±0.3% on MATH at 500 steps, making it the most consistent performer on harder problems.
 - **Retry Only has the highest MATH variance of any condition (σ=4.1%)**: the step-local credit and reflection approaches are both more stable choices when generalisation across seeds matters.
+
+---
+
+## Phase 9: Few-Shot Inference Evaluation
+
+**Hypothesis:** Adding in-context few-shot demonstrations of the reflect-then-retry pattern at inference time may further improve RLVR-trained models, giving the model explicit examples of high-quality reflection trajectories it can imitate.
+
+Few-shot prompting is evaluated only on **Reflect-Full + Retry** (the best RLVR condition). Results are mean ± std over 3 seeds (42, 0, 1). The `RLVR` column is the zero-shot baseline from Phase 1/8 for reference.
+
+### GSM8K-200
+
+| Condition | RLVR (zero-shot) | RLVR + Few-shot | Δ(FS) |
+|---|---|---|---|
+| Reflect-Full + Retry (system acc.) | 32.5%±0.0% | 32.2%±0.3% | **−0.3%** |
+| Reflect-Full + Retry (first-try acc.) | 31.5%±0.9% | 31.0%±1.3% | **−0.5%** |
+
+### MATH-200
+
+| Condition | RLVR (zero-shot) | RLVR + Few-shot | Δ(FS) |
+|---|---|---|---|
+| Reflect-Full + Retry (system acc.) | 18.7%±0.3% | 18.3%±0.6% | **−0.3%** |
+| Reflect-Full + Retry (first-try acc.) | 18.5%±0.5% | 18.0%±0.0% | **−0.5%** |
+
+### Takeaways
+
+- **Few-shot prompting consistently underperforms zero-shot RLVR** by −0.3% system accuracy and −0.5% first-try accuracy on both datasets. The effect is small but uniformly negative.
+- **The RLVR-trained model has already internalized the reflect+retry format** through training, so in-context demonstrations provide no incremental signal. The model's behavior is driven by its trained policy, not by imitation of prompt examples.
+- **Few-shot marginally increases variance on GSM8K** (first-try ±1.3% vs ±0.9% zero-shot), suggesting the demonstrations occasionally interfere with the model's learned strategy rather than reinforcing it.
+- **MATH first-try variance drops to 0.0%** under few-shot, but this accompanies a consistent accuracy drop — low variance at a lower mean is not a win.
+- **Few-shot is dropped from further experiments.** Zero-shot RLVR remains the best inference recipe for all conditions.
+
+---
+
+## Phase 10: GRPO Training
+
+**Hypothesis:** GRPO (Group Relative Policy Optimisation) uses within-group reward normalisation to reduce variance in the policy gradient signal, potentially providing a more stable training objective than RLVR's rejection-sampling approach — especially for structured reflection tasks where reward is sparse.
+
+GRPO is evaluated on three conditions (Baseline CoT, Retry Only, Reflect-Full + Retry) across 3 seeds. Reflect-Plan is not evaluated (it has been consistently weak across all prior phases). Results are mean ± std over seeds 42, 0, 1.
+
+### GSM8K-200 (native-mode system accuracy)
+
+| Condition | SFT | RLVR | GRPO | Δ(GRPO vs RLVR) |
+|---|---|---|---|---|
+| Baseline CoT | 34.5%±0.0% | 31.5%±2.0% | **34.8%±0.3%** | **+3.3%** |
+| Retry Only | 32.0%±0.0% | 34.5%±1.3% | **34.8%±0.3%** | +0.3% |
+| Reflect-Full + Retry | 28.5%±0.0% | **32.5%±0.0%** | 29.2%±0.3% | **−3.3%** |
+
+### MATH-200 (native-mode system accuracy)
+
+| Condition | SFT | RLVR | GRPO | Δ(GRPO vs RLVR) |
+|---|---|---|---|---|
+| Baseline CoT | 15.5%±0.0% | **17.2%±0.8%** | 15.3%±0.3% | −1.9% |
+| Retry Only | 20.5%±0.0% | 19.2%±3.3% | **20.7%±0.6%** | +1.5% |
+| Reflect-Full + Retry | 16.5%±0.0% | **18.7%±0.3%** | 17.0%±0.5% | **−1.7%** |
+
+### GRPO vs SFT lift (system accuracy)
+
+| Condition | GSM8K | MATH |
+|---|---|---|
+| Baseline CoT | +0.3% | −0.2% |
+| Retry Only | +2.8% | +0.2% |
+| Reflect-Full + Retry | +0.7% | +0.5% |
+
+### Why we tried both RLVR and GRPO
+
+Both methods are online RL algorithms that optimise a language model using verifiable math rewards, but they handle failed trajectories in fundamentally different ways — and that difference turns out to matter enormously for structured reflection.
+
+**RLVR (rejection-sampling fine-tuning)** is simple: at each step, sample a batch of rollouts, keep only the ones that got the answer right, and fine-tune on those with standard cross-entropy. Failed trajectories are silently discarded. The result is a clean, if sparse, training signal — the model only ever sees examples of itself succeeding.
+
+**GRPO** is more sophisticated: sample a group of rollouts per problem, compute each rollout's reward, then normalise rewards *within the group* to get relative advantages. This within-group normalisation is designed to reduce variance in the gradient signal — if most rollouts in a group fail, GRPO still extracts a useful signal from the one or two that succeeded, because it knows how much better they were than the group average.
+
+The appeal of GRPO for reflection is obvious in theory: Reflect-Full + Retry trajectories are long and require two things to go right (the reflection must be useful *and* the retry must succeed), so many rollouts fail. RLVR would discard all of them and apply zero gradient, potentially leaving the model undertrained on reflection. GRPO, by normalising within the group, should be able to extract a learning signal even from mostly-failing batches.
+
+**What actually happened** is the opposite. The within-group normalisation backfires precisely because Reflect-Full trajectories are so rarely correct. When nearly every rollout in a group fails, the "advantage" of the one success becomes numerically very large (since it is compared against a low baseline), but the gradient it produces is noisy — it reinforces the specific surface-level features of that one trajectory rather than the underlying reasoning strategy. Across many steps, this amplifies flukes and produces a less stable policy than simply waiting for the occasional good rollout and fine-tuning on it cleanly.
+
+RLVR's apparent weakness — discarding failed trajectories — is in practice its strength for sparse-reward settings: the model only trains on genuine successes, so every gradient step is high-quality. The cost is that training is slower when correct rollouts are rare. But for a 500-step run on math problems, this is not the bottleneck.
+
+### Takeaways
+
+- **GRPO significantly underperforms RLVR on Reflect-Full + Retry** — the most important condition. −3.3% on GSM8K and −1.7% on MATH. This is the central negative finding: GRPO's within-group normalisation amplifies noisy gradients on sparse-reward reflection tasks rather than stabilising them.
+- **GRPO matches or beats RLVR on simpler conditions.** Baseline CoT gains +3.3% on GSM8K (recovering from RLVR's regression there), and Retry Only is roughly matched. For conditions where rollouts succeed more often and trajectories are shorter, GRPO's normalisation provides its intended benefit.
+- **GRPO vs SFT lifts are small** (+0.3–2.8% GSM8K, ≤0.5% MATH). GRPO barely improves over the SFT starting point, suggesting that for these problem difficulties the gradient is not adding much beyond what supervised training already achieved.
+- **GRPO has very low variance** (±0.3–0.6% across all conditions), compared to RLVR's occasional instability (e.g. Retry Only MATH at ±3.3%). The stability is real but comes at the cost of peak accuracy — GRPO converges to a more consistent but lower ceiling.
+- **RLVR remains the best training recipe.** GRPO is not used in further phases.
+
+---
+
+## Phase 11: pass@k / Majority Vote
+
+**Hypothesis:** The current RLVR results could be explained by inference compute alone — Reflect-Full uses ~3× the tokens of a single Baseline CoT pass. pass@k and majority@k measure what a compute-matched sampling baseline achieves without any RL training, isolating whether RLVR adds genuine capability beyond just spending more tokens.
+
+**Two metrics:**
+
+- **pass@k** — did *any* of k independent samples get it right? Oracle upper bound (requires knowing which answer is correct at test time). Answers: "what is the ceiling for unguided search?"
+- **majority@k** — is the plurality answer (most common across k samples) correct? Oracle-free and deployable. Answers: "what does a practical inference-time scaling baseline achieve?"
+
+Evaluated on the Baseline CoT SFT checkpoint (no RL training, temperature=0.7), sweeping k ∈ {1, 2, 3, 8, 16}. Compute matching maps each trained condition to the k value whose token budget is equivalent.
+
+### Results
+
+**GSM8K** — Baseline SFT pass@k / majority@k (n=200):
+
+| k | Tokens (approx) | pass@k | maj@k | Compute-matched trained condition | RLVR acc |
+|---|---|---|---|---|---|
+| 1 | ~147 | 23.5% | 23.5% | Baseline CoT | 31.5% |
+| 2 | ~294 | 27.0% | 23.0% | Retry Only | 34.0% |
+| 3 | ~441 | 32.0% | 23.0% | Reflect-Full + Retry | **32.5%** |
+| 8 | ~1,176 | 43.5% | 23.0% | — | — |
+| 16 | ~2,352 | 51.0% | 24.5% | — | — |
+
+**MATH** — Baseline SFT pass@k / majority@k (n=200):
+
+| k | Tokens (approx) | pass@k | maj@k | Compute-matched trained condition | RLVR acc |
+|---|---|---|---|---|---|
+| 1 | ~136 | 15.5% | 15.5% | Baseline CoT | 16.5% |
+| 2 | ~272 | 20.0% | 16.0% | Retry Only | 23.0% |
+| 3 | ~408 | 24.5% | 16.5% | Reflect-Full + Retry | **18.5%** |
+| 8 | ~1,088 | 29.0% | 16.0% | — | — |
+| 16 | ~2,176 | 36.5% | 14.5% | — | — |
+
+### Takeaways
+
+**RLVR consistently beats majority@k at matched compute.** Across both datasets and all compute-matched conditions, trained RLVR models exceed maj@k by a substantial margin:
+
+- GSM8K Reflect-Full RLVR (32.5%) vs. maj@3 (23.0%): **+9.5 pp** — the clearest signal
+- GSM8K Retry Only RLVR (34.0%) vs. maj@2 (23.0%): **+11.0 pp**
+- MATH Retry Only RLVR (23.0%) vs. maj@2 (16.0%): **+7.0 pp**
+- MATH Reflect-Full RLVR (18.5%) vs. maj@3 (16.5%): **+2.0 pp** (smaller but consistent)
+
+This rules out the compute-equivalence alternative explanation: the gains from RLVR training are not simply an artifact of spending more tokens per problem.
+
+**majority@k is surprisingly flat.** On GSM8K, maj@k is essentially constant at ~23% from k=2 through k=16, despite pass@k climbing to 51%. This indicates the baseline model's errors are correlated — when it is wrong, it is confidently and consistently wrong in the same way. RLVR training changes this distribution, producing more diverse and correct solutions.
+
+**pass@k at k=3 matches Reflect-Full RLVR on GSM8K** (32.0% vs. 32.5%), but this is an oracle upper bound not achievable without a verifier. The deployable majority@k baseline at k=3 is only 23.0%, well below the trained model. The gap between pass@k and maj@k (9 pp on GSM8K, 8 pp on MATH at k=3) reflects the difficulty of inference-time selection without a reward signal.
+
+**MATH shows a different pattern.** maj@k barely moves from k=1 to k=16 (15.5% → 14.5%), suggesting even more correlated failures on harder problems. RLVR's +2.0 pp lift over maj@3 is modest in absolute terms but genuine, and larger gains appear on Retry Only (+7.0 pp).
+
+---
+
+## Phase 12: Step Credit SFT Baseline + Labeler Accuracy
+
+### Step Credit SFT Baseline
+
+Step Credit was previously missing an SFT column in the results tables, making its RLVR Δ uncomputable. The SFT baseline is now set to the **Retry Only SFT checkpoint** (`qwen3-4b-retry_only-r{rank}-seed{seed}`), since both conditions use blind retry at evaluation time and share the same pre-RL starting point.
+
+With the SFT baseline filled in, the RLVR Δ for Step Credit is **negative on both datasets**:
+
+| Dataset | SFT | RLVR | Δ (RLVR) |
+|---|---|---|---|
+| GSM8K (first-try) | 32.0%±0.0% | 30.2%±2.4% | **−1.8%** |
+| MATH (first-try) | 20.5%±0.0% | 16.8%±0.6% | **−3.7%** |
+
+RLVR training with step-local credit degrades first-try accuracy relative to the SFT starting point on both datasets. In system accuracy (with retry) the gap narrows, but Step Credit RLVR does not improve over its SFT baseline on either dataset. This is a robust negative result: step-local credit assignment, as implemented, actively harms the RLVR training signal.
+
+### Labeler Accuracy Evaluation
+
+**Hypothesis:** The step-local credit signal is only meaningful if the LLM verifier (`locate_mistake_step`) accurately identifies where the model first went wrong. Labeler accuracy contextualises the Step Credit negative result — it distinguishes between "the credit signal is correct but doesn't help" and "the credit signal is too noisy to be useful."
+
+**Oracle:** For GSM8K, ground-truth solutions include annotations of the form `<<expr=result>>`. The oracle evaluates each expression and flags the first step where `eval(expr) ≠ result`, giving automatic arithmetic ground truth without manual labeling. MATH does not have per-step annotations and is excluded.
+
+**Result:** Evaluating `locate_mistake_step` on the Step Credit RLVR checkpoint (100 GSM8K problems, temperature=0.7) revealed a confounding factor: the Step Credit checkpoint **generates solutions without intermediate steps** — outputs consist of a single final answer (`#### N`) with no multi-step reasoning chain. This means:
+
+- **oracle_coverage = 0%** — the oracle cannot find arithmetic errors in one-step solutions (no `<<expr=result>>` annotations to verify)
+- **labeler_idx = 0** for all problems — the labeler trivially points to step 0 since only one step exists
+- Exact match and within-1 accuracy are not computable
+
+This is itself a meaningful finding. RLVR training with step-level credit pressure appears to have collapsed the model's reasoning style — rather than learning better step attribution, the model learned to skip intermediate steps entirely, bypassing the credit mechanism. This provides a mechanistic explanation for the negative accuracy result: the step credit signal was not just noisy but counterproductive to the model's ability to generate multi-step solutions.
+
+**Implication for Step Credit as a method:** Reliable labeler accuracy is a precondition for step credit to function. The evaluation shows this precondition is violated in practice — not because the labeler is inaccurate, but because the training pressure itself destroys the step structure the labeler requires.

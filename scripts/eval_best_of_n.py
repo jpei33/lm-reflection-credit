@@ -46,6 +46,7 @@ import os
 import json
 import time
 import argparse
+from collections import Counter
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -100,6 +101,10 @@ def _parse_answer_loose(text: str, dataset: str) -> Optional[str]:
         return m.group(1).strip() if m else None
     else:
         m = re.search(r"####\s*(.+)$", text, re.MULTILINE)
+        if m:
+            return m.group(1).strip()
+        # Also handle \boxed{} for GSM8K models that output LaTeX format
+        m = re.search(r"\\boxed\{([^}]+)\}", text)
         if m:
             return m.group(1).strip()
         lines = [l.strip() for l in text.splitlines() if l.strip()]
@@ -236,14 +241,28 @@ def eval_bon(
 
             n_correct_in_group = sum(1 for c in completions if c.get("correct", False))
 
+            # Majority vote: pick the plurality answer across all N completions.
+            # Unlike pass@k (oracle), majority vote is oracle-free and deployable.
+            valid_preds = [c["pred"] for c in completions if c.get("pred") is not None]
+            if valid_preds:
+                majority_pred = Counter(valid_preds).most_common(1)[0][0]
+                majority_correct = _answers_match(majority_pred, gt)
+            else:
+                majority_pred = None
+                majority_correct = False
+
             result = {
                 "problem_id": pid,
                 "question":   q[:120],
                 "gt":         gt,
                 "dataset":    ds,
                 "n":          n,
+                # pass@k: did ANY of the k samples get it right? (oracle upper bound)
                 "any_correct": any_correct,
                 "n_correct_in_group": n_correct_in_group,
+                # majority@k: is the plurality answer correct? (deployable, no oracle)
+                "majority_pred":    majority_pred,
+                "majority_correct": majority_correct,
                 # Mimic eval_sft.py format so compare_results.py can read it
                 "first": {
                     "text":          first_correct_text or (completions[0].get("text") if completions else ""),
@@ -265,17 +284,23 @@ def eval_bon(
 
             acc_so_far = correct / max(idx + 1 - skipped, 1)
             marker = "✓" if any_correct else "✗"
+            maj_marker = "✓" if majority_correct else "✗"
             print(
                 f"  [{marker}] [{idx+1:>4}/{total}] "
-                f"n_correct={n_correct_in_group}/{n}  "
-                f"running_acc={acc_so_far:.1%}  "
-                f"{q[:50]!r}"
+                f"pass@k={n_correct_in_group}/{n}  "
+                f"maj[{maj_marker}]={majority_pred!r}  "
+                f"running_pass={acc_so_far:.1%}  "
+                f"{q[:40]!r}"
             )
 
     total_done = total - skipped
     final_acc  = correct / max(total_done, 1)
-    print(f"\n[bon] N={n}  dataset={dataset}  acc={final_acc:.1%}"
-          f"  ({correct}/{total_done} correct)")
+    rows_out   = load_jsonl(output_path)
+    maj_correct_count = sum(1 for r in rows_out if r.get("majority_correct", False))
+    maj_acc    = maj_correct_count / max(total_done, 1)
+    print(f"\n[bon] N={n}  dataset={dataset}")
+    print(f"  pass@{n}    = {final_acc:.1%}  ({correct}/{total_done})  ← oracle upper bound")
+    print(f"  majority@{n} = {maj_acc:.1%}  ({maj_correct_count}/{total_done})  ← deployable")
 
 
 # ---------------------------------------------------------------------------

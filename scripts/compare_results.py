@@ -84,7 +84,9 @@ _CONDITIONS = [
     },
     {
         "label":  "Step Credit",
-        "sft":    None,  # no SFT-only baseline for step-credit
+        # SFT baseline reuses the Retry Only SFT checkpoint: both conditions
+        # use blind retry at eval time, so the pre-RL starting point is the same.
+        "sft":    "qwen3-4b-retry_only-r{rank}-seed{seed}",
         "rlvr":   "step_credit-r{rank}-seed{seed}",
         "grpo":   None,  # not implemented in Phase 3
         "stw":    None,  # no STW variant for step-credit
@@ -316,10 +318,17 @@ def find_bon_file(results_dir: Path, run_name: str, n: int, dataset: str) -> Opt
 
 
 def bon_acc(rows: List[dict]) -> float:
-    """Accuracy from BoN result file (any_correct field)."""
+    """pass@k accuracy: did ANY of the k samples get it right? (oracle upper bound)"""
     if not rows:
         return 0.0
     return sum(1 for r in rows if r.get("any_correct", False)) / len(rows)
+
+
+def majority_acc(rows: List[dict]) -> float:
+    """majority@k accuracy: is the plurality answer correct? (deployable, no oracle)"""
+    if not rows:
+        return 0.0
+    return sum(1 for r in rows if r.get("majority_correct", False)) / len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -331,13 +340,15 @@ def report(
     dataset: str,
     phases_present: List[str],
     multi_seed_data: Optional[Dict[str, Dict[str, List[Optional[List[dict]]]]]] = None,
-    bon_data: Optional[Dict[int, Dict[str, float]]] = None,  # {N: {label: acc}}
+    bon_data: Optional[Dict[int, Dict[str, float]]] = None,       # {N: {label: pass@k acc}}
+    majority_data: Optional[Dict[int, Dict[str, float]]] = None,  # {N: {label: majority@k acc}}
     gsm8k_tier_map: Optional[Dict[str, str]] = None,
 ) -> None:
     """
     phase_data:       phase_data[phase][label] = rows (single seed, primary)
     multi_seed_data:  multi_seed_data[phase][label] = [rows_seed0, rows_seed1, ...]
-    bon_data:         bon_data[N][label] = accuracy
+    bon_data:         bon_data[N][label] = pass@k accuracy   (oracle: any of k correct)
+    majority_data:    majority_data[N][label] = majority@k accuracy (plurality vote)
     """
     n_examples = 0
     for phase_rows in phase_data.values():
@@ -365,7 +376,9 @@ def report(
     if "fewshot" in phases_present: hdr += f"{'RLVR+FS':>{col_w}}  {'Δ(FS)':>8}"
     if bon_data:
         for n_val in sorted(bon_data.keys()):
-            hdr += f"  {'BoN-'+str(n_val):>8}"
+            hdr += f"  {'pass@'+str(n_val):>8}"
+            if majority_data and n_val in majority_data:
+                hdr += f"  {'maj@'+str(n_val):>8}"
     hdr += f"  {'Tokens':>7}"
     print(f"\n  System accuracy (first-try OR retry correct):\n")
     print(hdr)
@@ -421,13 +434,18 @@ def report(
             for n_val in sorted(bon_data.keys()):
                 bon_acc_val = bon_data[n_val].get(label)
                 row += f"  {_fmt_acc(bon_acc_val):>8}"
+                if majority_data and n_val in majority_data:
+                    maj_acc_val = majority_data[n_val].get(label)
+                    row += f"  {_fmt_acc(maj_acc_val):>8}"
         row += f"  {tok:>7.0f}" if tok else "       n/a"
         print(row)
 
-    # ── Best-of-N section ────────────────────────────────────────────────────
+    # ── pass@k / majority@k vs trained models ────────────────────────────────
     if bon_data:
-        print(f"\n  Best-of-N vs trained models (compute-matched check):")
-        print(f"  If RLVR > BoN-N, training adds real value beyond sampling more.")
+        print(f"\n  pass@k / majority@k vs trained models (compute-matched check):")
+        print(f"  pass@k = oracle upper bound (any of k correct)")
+        print(f"  maj@k  = deployable (plurality vote, no oracle)")
+        print(f"  If RLVR > maj@k, training adds real value beyond sampling more.")
         for cond in _CONDITIONS:
             label = cond["label"]
             rlvr_rows = phase_data.get("rlvr", {}).get(label)
@@ -438,8 +456,14 @@ def report(
             for n_val in sorted(bon_data.keys()):
                 bon_a = bon_data[n_val].get(label)
                 if bon_a is not None:
-                    delta = rlvr_a - bon_a
-                    parts.append(f"BoN-{n_val}={bon_a:.1%}(Δ{delta:+.1%})")
+                    delta_pass = rlvr_a - bon_a
+                    entry = f"pass@{n_val}={bon_a:.1%}(Δ{delta_pass:+.1%})"
+                    if majority_data and n_val in majority_data:
+                        maj_a = majority_data[n_val].get(label)
+                        if maj_a is not None:
+                            delta_maj = rlvr_a - maj_a
+                            entry += f" maj@{n_val}={maj_a:.1%}(Δ{delta_maj:+.1%})"
+                    parts.append(entry)
             print(f"    {'  '.join(parts)}")
 
     # ── RLVR lift bar chart ───────────────────────────────────────────────────
@@ -719,14 +743,17 @@ def main() -> None:
             bon_n_values = args.bon_n
 
         bon_data: Dict[int, Dict[str, float]] = {}
+        majority_data: Dict[int, Dict[str, float]] = {}
         for n_val in bon_n_values:
             fpath = results_dir / f"{bon_run}_bon_n{n_val}_{ds}.jsonl"
             if fpath.exists():
                 rows = load_jsonl(fpath)
-                # BoN acc applies to baseline condition (same SFT checkpoint)
-                acc = bon_acc(rows)
-                bon_data[n_val] = {"Baseline CoT": acc}
-                print(f"  [load] [bon ] N={n_val:<2} Baseline CoT  {len(rows):>4} rows  acc={acc:.1%}")
+                # pass@k and majority@k both apply to baseline condition (same SFT checkpoint)
+                p_acc = bon_acc(rows)
+                m_acc = majority_acc(rows)
+                bon_data[n_val]      = {"Baseline CoT": p_acc}
+                majority_data[n_val] = {"Baseline CoT": m_acc}
+                print(f"  [load] [bon ] N={n_val:<2} Baseline CoT  {len(rows):>4} rows  pass@k={p_acc:.1%}  maj@k={m_acc:.1%}")
 
         # ── Determine which phases have any data ──────────────────────────────
         phases_present = [
@@ -748,6 +775,7 @@ def main() -> None:
             phases_present=phases_present,
             multi_seed_data=ms_data if multi_seed else None,
             bon_data=bon_data if bon_data else None,
+            majority_data=majority_data if majority_data else None,
             gsm8k_tier_map=gsm8k_tier_map,
         )
 
