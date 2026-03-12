@@ -480,9 +480,24 @@ RLVR training with step-local credit degrades first-try accuracy relative to the
 - **labeler_idx = 0** for all problems — the labeler trivially points to step 0 since only one step exists
 - Exact match and within-1 accuracy are not computable
 
-This is itself a meaningful finding. RLVR training with step-level credit pressure appears to have collapsed the model's reasoning style — rather than learning better step attribution, the model learned to skip intermediate steps entirely, bypassing the credit mechanism. This provides a mechanistic explanation for the negative accuracy result: the step credit signal was not just noisy but counterproductive to the model's ability to generate multi-step solutions.
+### SFT Labeler Control
 
-**Implication for Step Credit as a method:** Reliable labeler accuracy is a precondition for step credit to function. The evaluation shows this precondition is violated in practice — not because the labeler is inaccurate, but because the training pressure itself destroys the step structure the labeler requires.
+To determine whether the collapse was caused by RL training or was already present at the SFT checkpoint, we ran the same labeler evaluation on the **SFT Retry Only checkpoint** (pre-RL, 100 problems, temperature=0.7) and compared it directly.
+
+| Metric | SFT Retry Only (pre-RL) | Step Credit RLVR |
+|---|---|---|
+| Problems evaluated | 100 | 100 |
+| Avg solution steps | 1.0 | 1.0 |
+| Single-step outputs | 100% | 100% |
+| Oracle coverage | **0.0%** | **0.0%** |
+| Exact match accuracy | n/a | n/a |
+| Mean abs step error | n/a | n/a |
+
+The SFT checkpoint and the Step Credit RLVR checkpoint are **identical** on every labeler metric. Both produce 100% single-step outputs with zero oracle coverage before any RL training has occurred.
+
+**The collapse happened at SFT time, not during RL.** The SFT training data used a short-form answer format (`#### N`) that the model memorised completely. RL training on top of this checkpoint had no step structure to reinforce or destroy — the format was already degenerate. This rules out the interpretation that Step Credit's reward signal caused the collapse; it was inherited from the SFT warm-start.
+
+**Implication for Step Credit as a method:** Reliable labeler accuracy is a precondition for step credit to function. The evaluation shows this precondition is violated in practice — not because the labeler is inaccurate, but because the SFT training format itself destroys the step structure the labeler requires before RL even begins. A valid test of step-local credit assignment would require an SFT dataset that produces multi-step outputs with intermediate annotations.
 
 
 ---
