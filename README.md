@@ -663,28 +663,33 @@ in summing the x-coefficients: 8 − 18 + 27 + 9 = 26 instead of 17]
 
 **Hypothesis:** If Reflect-Full RLVR works because the model learns genuine reflection behaviour rather than surface-level pattern matching, the gains should scale with model size — a larger model with more capacity should reflect more accurately and correct more errors.
 
-We train `Qwen/Qwen3-8B` with the same Reflect-Full + Retry recipe: 500-step SFT warm-start followed by 500-step RLVR. Only seed 42 is complete; seeds 0 and 1 are in progress.
+We train `Qwen/Qwen3-8B` with the same Reflect-Full + Retry recipe: 500-step SFT warm-start followed by 500-step RLVR, across seeds 0, 1, and 42.
 
-### Results (seed 42 only — multi-seed mean ± std pending)
+### Results (3 seeds, mean ± std)
 
-| Metric | 4B SFT | 4B RLVR | 8B RLVR | Δ (8B vs 4B RLVR) |
+| Metric | 4B SFT | 4B RLVR (mean ± std) | 8B RLVR (mean ± std) | Δ (8B vs 4B RLVR) |
 |---|---|---|---|---|
-| **GSM8K system accuracy** | 28.5% | 32.5%* | **34.5%** | **+2.0pp** |
-| **GSM8K first-try accuracy** | 28.5% | 31.0%* | **32.5%** | **+1.5pp** |
-| **MATH system accuracy** | 16.5% | 18.5%* | **23.0%** | **+4.5pp** |
-| **MATH first-try accuracy** | 16.5% | 18.5%* | **25.0%** | **+6.5pp** |
+| **GSM8K system accuracy** | 28.5% | 32.5 ± 0.0% | **34.8 ± 0.6%** | **+2.3pp** |
+| **MATH system accuracy** | 16.5% | 18.7 ± 0.3% | **22.2 ± 0.8%** | **+3.5pp** |
 
-\* 4B RLVR numbers are mean across seeds 42, 0, 1. 8B is seed 42 only; Δ is a provisional single-seed comparison.
+**Per-seed breakdown:**
+
+| Seed | 8B GSM8K | 8B MATH |
+|---|---|---|
+| seed 0 | 34.5% (69/200) | 21.5% (43/200) |
+| seed 1 | 35.5% (71/200) | 22.0% (44/200) |
+| seed 42 | 34.5% (69/200) | 23.0% (46/200) |
+| **Mean ± std** | **34.8 ± 0.6%** | **22.2 ± 0.8%** |
 
 ### Takeaways
 
-**Scaling helps, and helps more on harder problems.** The 8B model outperforms the 4B on both datasets, but the gap is substantially larger on MATH (+4.5pp system, +6.5pp first-try) than on GSM8K (+2.0pp system, +1.5pp first-try). This is the expected pattern: GSM8K problems are mostly arithmetic with limited reasoning depth, leaving little room for a larger model to leverage its additional capacity. MATH problems require multi-step algebraic and symbolic reasoning, where the 8B model's stronger representations translate directly into better first-attempt quality.
+**Scaling provides consistent, low-variance gains.** The 8B model outperforms the 4B by +2.3pp on GSM8K and +3.5pp on MATH, with very tight cross-seed standard deviations (0.6pp and 0.8pp respectively). The 4B RLVR results are even tighter (0.0pp and 0.3pp std), confirming that both model sizes train stably under the Reflect-Full RLVR recipe.
 
-**First-try accuracy improves more than system accuracy on MATH.** The 8B first-try gain (+6.5pp) exceeds the system gain (+4.5pp), which means the 8B model solves more problems outright without needing the reflection + retry step. Reflection adds value at both model sizes, but the 8B model relies on it less — it is more likely to get the answer right the first time, and when it does reflect, it corrects fewer additional problems (only 2 additional, 1.0%) compared to GSM8K (4 additional, 2.0%). This suggests that at 8B scale the model's first-pass reasoning is more reliable, and the reflection mechanism's marginal contribution shifts from error-correction to a safety net for the remaining difficult cases.
+**The gain is larger on MATH than GSM8K.** This is the expected pattern: GSM8K problems are mostly single-step arithmetic with limited reasoning depth, leaving little headroom for a larger model. MATH requires multi-step algebraic and symbolic reasoning where the 8B model's stronger representations translate into meaningfully better first-attempt quality. The +3.5pp MATH gain vs +2.3pp GSM8K gap is consistent with this hypothesis.
 
-**The Reflect-Full RLVR recipe transfers cleanly to 8B.** The training dynamics (reward signal, convergence behaviour) are consistent with the 4B runs. There is no evidence that the larger model requires a different training recipe — same 500 steps, same LoRA rank 8, same RLVR objective.
+**The Reflect-Full RLVR recipe transfers cleanly to 8B.** Training dynamics (reward signal, convergence behaviour, seed variance) are consistent with the 4B runs. No changes to the training recipe were needed — same 500 steps, LoRA rank 8, same RLVR objective.
 
-### CLI (seeds 0 and 1 — run after seed 42 completes)
+### CLI (seeds 0 and 1 — completed)
 
 ```powershell
 python scripts\train_rrr.py --reflection_mode full --seed 0 --run_name rrr-full-8b-r8-seed0 --base_model Qwen/Qwen3-8B --sft_checkpoint qwen3-8b-reflect_full_retry-r8-seed42 --max_steps 500 --checkpoint_every 50; if ($?) { python scripts\train_rrr.py --reflection_mode full --seed 1 --run_name rrr-full-8b-r8-seed1 --base_model Qwen/Qwen3-8B --sft_checkpoint qwen3-8b-reflect_full_retry-r8-seed42 --max_steps 500 --checkpoint_every 50 }; if ($?) { python scripts\eval_sft.py --run_name rrr-full-8b-r8-seed0 --mode reflect_full_retry --base_model Qwen/Qwen3-8B --dataset both --resume --checkpoint_every 10 }; if ($?) { python scripts\eval_sft.py --run_name rrr-full-8b-r8-seed1 --mode reflect_full_retry --base_model Qwen/Qwen3-8B --dataset both --resume --checkpoint_every 10 }; if ($?) { python scripts\compare_results.py --seeds 42 0 1 }
