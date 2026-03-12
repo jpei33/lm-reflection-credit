@@ -513,7 +513,23 @@ Oracle upper bound (pass@k, blue) and deployable majority vote (majority@k, oran
   <img src="figures/fig3_training_curves.png" width="95%" />
 </p>
 
-Fraction of rollouts with correct final answer (training reward) over the 500-step run, averaged across 3 seeds with ±1 std shading. Reflect-Full RLVR and Retry Only RLVR climb steadily. Reflect-Full GRPO (dashed) lags behind both RLVR conditions — consistent with the evaluation results and the within-group normalisation explanation: when most rollouts fail, GRPO's relative reward signal amplifies noise rather than signal.
+Fraction of rollouts with correct final answer (training reward) over the 500-step run, averaged across 3 seeds with ±1 std shading. Reflect-Full RLVR and Retry Only RLVR show real learning signal. Reflect-Full GRPO (dashed) lags behind — consistent with the evaluation results and the reward sparsity explanation described in Figure 4 below.
+
+### Figure 4 — Training Dynamics: GRPO Reward Collapse (`fig4_training_dynamics.png`)
+
+<p align="center">
+  <img src="figures/fig4_training_dynamics.png" width="95%" />
+</p>
+
+A three-panel breakdown of the GRPO vs RLVR training dynamics.
+
+**Top panel:** GRPO reward (fraction of rollouts correct) is essentially flat throughout the entire 500-step run — mean 0.26 early, 0.26 late, with no upward trend. RLVR conditions (Reflect-Full and Retry Only) are noisier but show real variation and gradual improvement. The dotted reference line at 0.26 makes the GRPO flatness unmistakable.
+
+**Bottom-left:** Seed-to-seed reward variance over training. GRPO shows high variance across seeds without directional movement — the signal is stochastic but not learning. RLVR conditions have lower cross-seed variance, indicating more consistent learning dynamics.
+
+**Bottom-right:** Late-training reward distribution (steps 400–500, all seeds). RLVR conditions produce wide, high-median distributions — many batches achieve 0.5–1.0 fraction correct, confirming the model is learning to solve problems. GRPO's distribution is narrow and stuck around 0.25, showing the reward signal has not improved over the course of training.
+
+**Why GRPO flattens:** GRPO normalises rewards within each rollout group using group-relative advantages. When most rollouts in a group fail (reward ≈ 0), the one correct rollout receives a large positive advantage and the failures receive small negative advantages. In sparse-reward settings like reflection tasks — where the model must first attempt a problem, reflect, and retry correctly — the majority of rollout groups have zero or one success out of eight samples. This means most gradient steps are computed from a single correct rollout against seven failures, producing very high-variance gradient estimates. Over 500 steps, these noisy gradients cancel rather than accumulate, leaving the reward flat. RLVR avoids this by discarding failed rollouts entirely and training only on the successes — a simpler but more stable signal in sparse-reward regimes.
 
 ---
 
