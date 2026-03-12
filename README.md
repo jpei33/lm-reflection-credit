@@ -512,7 +512,7 @@ All figures are saved to `figures/`.
   <img src="figures/fig1_rlvr_delta.png" width="95%" />
 </p>
 
-RLVR lift (percentage points) over the SFT baseline for each training condition on GSM8K (left) and MATH (right). Positive bars (blue/green) indicate RLVR improves over SFT; negative bars (red/orange) indicate degradation. Retry Only and Reflect-Full + Retry show consistent positive lift on both datasets. Reflect-Plan + Retry and Step Credit show negative or near-zero lift, confirming these as failed conditions. Baseline CoT shows negative lift on GSM8K, suggesting the RL reward signal is too sparse for the simplest format.
+RLVR lift (percentage points) over the matched SFT baseline for each training condition on GSM8K (left) and MATH (right). Error bars show ±1 std across 3 independent seeds (seeds 0, 1, 42). Positive bars (blue/green) indicate RLVR improves over SFT; negative bars (red/orange) indicate degradation. Reflect-Full + Retry is the only condition with positive lift on both benchmarks (+3.5pp GSM8K, +0.7pp MATH). Retry Only is positive on GSM8K (+2.5pp) but negative on MATH (−2.8pp). Step Credit, Reflect-Plan + Retry, and Baseline CoT all show negative or near-zero lift on at least one benchmark, confirming them as failed conditions. The tight error bars for Reflect-Full (GSM8K std = 0.0pp, MATH std = 0.3pp) confirm it is the most stable positive result.
 
 ### Figure 2 — pass@k Curve (`fig2_passk_curve.png`)
 
@@ -569,6 +569,16 @@ FIX_PLAN: recheck calculations and assumptions
 Across 138 GSM8K reflections, 0 are unique (100% identical). The pattern holds across all three seeds and both datasets (163 MATH reflections, likewise 0 unique). The model learned a maximally generic diagnostic template during SFT training, and RL reinforcement did not break this mode. This is not a trivially suboptimal behaviour — the generic reflection does carry a weak signal (it always labels the error type as arithmetic, which is often true on GSM8K). But it conveys no problem-specific information, and the retry model cannot localise the error from it.
 
 **Connection to Step Credit:** The solve steps produce only `#### N` — no intermediate `<<expr=result>>` annotations that the step labeler requires. With oracle coverage = 0%, step-level credit assignment has no training signal at all. The reflection collapse compounds this: even if step annotations were present in first-attempt outputs, the generic reflection provides no gradient signal to selectively reinforce correct steps. Both the representation collapse (no CoT) and the reflection collapse (no specificity) must be addressed before step-local credit can function.
+
+### Figure 6 — Scaling: Accuracy vs Model Size (`fig6_scaling.png`)
+
+<p align="center">
+  <img src="figures/fig6_scaling.png" width="95%" />
+</p>
+
+System accuracy of the Reflect-Full + Retry recipe at 4B and 8B parameters, for GSM8K (left) and MATH (right). The RLVR line shows mean ± std across 3 seeds; the SFT point shows the matched 4B SFT checkpoint (a single checkpoint; no 8B SFT eval was run). The shaded band is ±1 std.
+
+Both benchmarks show consistent upward scaling. The gain is larger on MATH (+3.5pp, from 18.7% to 22.2%) than on GSM8K (+2.3pp, from 32.5% to 34.8%), consistent with harder problems making better use of additional model capacity. Cross-seed standard deviations remain tight at both sizes (4B: GSM8K 0.0pp, MATH 0.3pp; 8B: GSM8K 0.6pp, MATH 0.8pp), confirming that the Reflect-Full RLVR recipe transfers stably to 8B without changes to the training configuration.
 
 ---
 
