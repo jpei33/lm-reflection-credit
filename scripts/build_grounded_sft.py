@@ -394,9 +394,13 @@ def main() -> None:
     service = tinker.ServiceClient()
 
     print(f"\n[tinker] Creating student sampling client ({args.student_model}) ...")
-    student_sc, student_tok = _make_sampling_client(
-        service, None, tinker, types, args.student_model
-    )
+    try:
+        student_sc, student_tok = _make_sampling_client(
+            service, None, tinker, types, args.student_model
+        )
+    except Exception as exc:
+        print(f"\n[FATAL] Student client creation failed: {type(exc).__name__}: {exc}")
+        raise
     print("[tinker] Student client ready.")
 
     same_model = (args.student_model == args.teacher_model)
@@ -405,9 +409,13 @@ def main() -> None:
         print("[tinker] Teacher = student (same model).")
     else:
         print(f"[tinker] Creating teacher sampling client ({args.teacher_model}) ...")
-        teacher_sc, teacher_tok = _make_sampling_client(
-            service, None, tinker, types, args.teacher_model
-        )
+        try:
+            teacher_sc, teacher_tok = _make_sampling_client(
+                service, None, tinker, types, args.teacher_model
+            )
+        except Exception as exc:
+            print(f"\n[FATAL] Teacher client creation failed: {type(exc).__name__}: {exc}")
+            raise
         print("[tinker] Teacher client ready.")
 
     # -- Main loop ---------------------------------------------------------------
