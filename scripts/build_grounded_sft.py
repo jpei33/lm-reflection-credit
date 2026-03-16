@@ -65,10 +65,10 @@ from src.rrr.rrr_infer import (
     build_reflection_prompt_grounded,
     build_retry_prompt_grounded,
     build_solve_prompt,
-    parse_gt_final,
+    normalize_answer,
     parse_pred_final,
-    strict_match,
 )
+from src.utils.answer_parser import math_strict_equal
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +450,14 @@ def main() -> None:
             p = parse_pred_final(student_answer)
             pred_final_str = p.get("loose") or p.get("strict") or ""
 
-            # Check if wrong
-            gt_parsed = parse_gt_final(gt_final)
-            ok = strict_match(
-                parse_pred_final(student_answer).get("strict", ""),
-                gt_parsed,
-            )
+            # Check if wrong — compare pred against gt_final string directly.
+            # parse_gt_final / strict_match expect a full example dict; here
+            # we have plain strings, so use the lower-level helpers instead.
+            pred_strict = parse_pred_final(student_answer).get("strict", "")
+            if dataset == "math":
+                ok = math_strict_equal(pred_strict, gt_final)
+            else:
+                ok = normalize_answer(pred_strict) == normalize_answer(gt_final)
             if ok:
                 # Correct first attempt — no reflection signal, skip
                 continue
