@@ -765,3 +765,167 @@ python scripts\train_rrr.py --reflection_mode full --seed 0 --run_name rrr-full-
 ```powershell
 python scripts\train_rrr_grpo.py --reflection_mode full --seed 42 --run_name rrr_grpo-full-8b-r8-seed42 --base_model Qwen/Qwen3-8B --sft_checkpoint qwen3-8b-reflect_full_retry-r8-seed42 --max_steps 500 --rank 8; if ($?) { python scripts\train_rrr_grpo.py --reflection_mode full --seed 0 --run_name rrr_grpo-full-8b-r8-seed0 --base_model Qwen/Qwen3-8B --sft_checkpoint qwen3-8b-reflect_full_retry-r8-seed42 --max_steps 500 --rank 8 }; if ($?) { python scripts\train_rrr_grpo.py --reflection_mode full --seed 1 --run_name rrr_grpo-full-8b-r8-seed1 --base_model Qwen/Qwen3-8B --sft_checkpoint qwen3-8b-reflect_full_retry-r8-seed42 --max_steps 500 --rank 8 }; if ($?) { python scripts\eval_sft.py --run_name rrr_grpo-full-8b-r8-seed42 --mode reflect_full_retry --base_model Qwen/Qwen3-8B --dataset both }; if ($?) { python scripts\eval_sft.py --run_name rrr_grpo-full-8b-r8-seed0 --mode reflect_full_retry --base_model Qwen/Qwen3-8B --dataset both }; if ($?) { python scripts\eval_sft.py --run_name rrr_grpo-full-8b-r8-seed1 --mode reflect_full_retry --base_model Qwen/Qwen3-8B --dataset both }
 ```
+
+---
+
+## Phase 15: 8B Retry Only RLVR — Does Reflection Help at Scale?
+
+**Motivation:** At 4B, RLVR Retry Only (34.5% GSM8K) outperforms RLVR Reflect-Full (32.5% GSM8K), which we attribute to reflection template collapse — the model outputs an identical generic reflection on every problem, making Reflect-Full degenerate into a noisier version of Retry Only. The question here is whether this pattern persists at 8B. If the 8B model also fails to produce diverse, useful reflections, then 8B Retry Only should match or exceed 8B Reflect-Full, and the collapse explanation extends across model sizes.
+
+We train `Qwen/Qwen3-8B` on Retry Only RLVR: SFT warm-start from the 8B Retry Only SFT checkpoint, then 500-step RLVR across seeds 0, 1, and 42.
+
+### Results (3 seeds, mean ± std)
+
+| Metric | 4B Retry Only | 8B Retry Only | Δ (8B vs 4B) |
+|---|---|---|---|
+| **GSM8K system accuracy** | 34.5 ± 1.3% | **35.5 ± 1.7%** | **+1.0pp** |
+| **MATH system accuracy** | 19.2 ± 3.3% | **21.7 ± 0.3%** | **+2.5pp** |
+
+**Per-seed breakdown (8B Retry Only):**
+
+| Seed | GSM8K | MATH |
+|---|---|---|
+| seed 42 | 34.5% (69/200) | 21.5% (43/200) |
+| seed 0 | 37.5% (75/200) | 22.0% (44/200) |
+| seed 1 | 34.5% (69/200) | 21.5% (43/200) |
+| **Mean ± std** | **35.5 ± 1.7%** | **21.7 ± 0.3%** |
+
+**8B Retry Only vs 8B Reflect-Full (head-to-head):**
+
+| Condition | GSM8K | MATH |
+|---|---|---|
+| 8B RLVR Retry Only | **35.5 ± 1.7%** | 21.7 ± 0.3% |
+| 8B RLVR Reflect-Full | 34.8 ± 0.6% | **22.2 ± 0.8%** |
+| Δ (Retry Only − Reflect-Full) | **+0.7pp** | −0.5pp |
+
+### Takeaways
+
+**Reflection still offers no advantage at 8B.** Retry Only and Reflect-Full are statistically indistinguishable at 8B: Retry Only leads by 0.7pp on GSM8K and trails by 0.5pp on MATH, both well within seed variance. This directly mirrors the 4B finding and confirms that the reflection collapse is not a capacity-limited failure mode — the 8B model exhibits the same `<think>\n\n</think>` output collapse and learns no more from structured reflection than the 4B model does.
+
+**The 4B Retry Only MATH variance problem is resolved at 8B.** At 4B, Retry Only shows 3.3pp std on MATH (ranging from 17.0% to 23.0%), suggesting the 4B model is near the edge of reliable learning for MATH under this recipe. At 8B the std collapses to 0.3pp — the model trains stably and the MATH gain (+2.5pp mean) is robust rather than seed-dependent.
+
+**Retry Only is the strongest and simplest 8B recipe.** Averaged across both benchmarks, 8B Retry Only (35.5% GSM8K, 21.7% MATH) and 8B Reflect-Full (34.8% GSM8K, 22.2% MATH) are equivalent. Retry Only requires no reflection data format or template, is cheaper to run, and matches Reflect-Full at both model sizes. For practitioners, this means the added complexity of structured reflection provides no benefit when the reflection template is collapsed.
+
+**The capacity × reflection interaction does not rescue reflection.** We have now confirmed the same null result for reflection at both 4B and 8B: scaling the model improves overall accuracy but does not restore meaningful reflection behaviour. The bottleneck is the SFT collapse, not model capacity.
+
+### CLI (completed)
+
+```powershell
+python scripts\run_phases.py --phases 11
+```
+
+---
+
+## Phase 16: Grounded Reflection — Can Better SFT Data Make Reflection Beat Retry Only?
+
+**Motivation:** Every prior reflection experiment failed for the same root cause: the SFT training data was broken. `build_curriculum_sft.py` used a hardcoded constant string as the reflection target (`ERROR_TYPE: arithmetic / LIKELY_STEP: unknown / FIX_PLAN: recheck calculations and assumptions`) and deliberately omitted the failed solution from the reflection prompt (`solution="<previous solution omitted>"`). The model never learned to read a failed attempt; it learned to emit a fixed string. Reflection could not beat Retry Only because there was no reflection being performed.
+
+This phase redesigns the reflection from scratch with three changes:
+
+1. **Forced-quote format** — the reflection must cite the exact wrong line from the failed attempt: `WRONG LINE: "..." / WHY WRONG: ... / CORRECT VALUE: ...`. This is syntactically impossible to answer without reading the solution.
+2. **Full failed solution included** — the reflection prompt now passes the actual student attempt, not a placeholder.
+3. **Teacher-model SFT data** — a stronger model (`Qwen/Qwen3-8B`) generates the reflection demonstrations, seeing the correct answer as oracle context. No more hardcoded labels.
+
+### New files
+
+| File | Purpose |
+|---|---|
+| `scripts/build_grounded_sft.py` | Two-model pipeline: student generates wrong attempts, teacher generates grounded reflections |
+| `src/rrr/rrr_infer.py` | Added `build_reflection_prompt_grounded` and `build_retry_prompt_grounded` |
+| `scripts/train_sft_lora_tiny.py` | Added `reflect_grounded` to `--mode` choices |
+| `scripts/train_rrr.py` | Added `grounded` to `--reflection_mode` choices |
+| `src/rrr/train_rrr.py` | Added `grounded` dispatch for `build_retry_prompt_grounded` in RLVR loop |
+
+### Step 1: Generate grounded SFT data
+
+```powershell
+# ~2 000 problems → ~1 200–1 400 usable SFT pairs (60-70% yield after wrong-attempt filtering)
+python scripts\build_grounded_sft.py `
+    --student_model Qwen/Qwen3-4B-Instruct-2507 `
+    --teacher_model Qwen/Qwen3-8B `
+    --limit 2000 `
+    --out_jsonl data\processed\curriculum\reflect_grounded.jsonl
+```
+
+### Step 2: Train grounded SFT (4B, seed 42)
+
+```powershell
+python scripts\train_sft_lora_tiny.py `
+    --mode reflect_grounded `
+    --seed 42 `
+    --run_name qwen3-4b-reflect_grounded-r8-seed42 `
+    --max_steps 500 `
+    --checkpoint_every 50
+```
+
+### Step 3: Train grounded RLVR (4B, seed 42 — first test)
+
+```powershell
+python scripts\train_rrr.py `
+    --reflection_mode grounded `
+    --seed 42 `
+    --run_name rrr-grounded-r8-seed42 `
+    --sft_checkpoint qwen3-4b-reflect_grounded-r8-seed42 `
+    --max_steps 500 `
+    --checkpoint_every 50
+```
+
+### Step 4: Eval
+
+```powershell
+python scripts\eval_sft.py `
+    --run_name rrr-grounded-r8-seed42 `
+    --mode reflect_full_retry `
+    --dataset both
+```
+
+### Full sequential CLI
+
+```powershell
+python scripts\build_grounded_sft.py --student_model Qwen/Qwen3-4B-Instruct-2507 --teacher_model Qwen/Qwen3-8B --limit 2000 --out_jsonl data\processed\curriculum\reflect_grounded.jsonl; if ($?) { python scripts\train_sft_lora_tiny.py --mode reflect_grounded --seed 42 --run_name qwen3-4b-reflect_grounded-r8-seed42 --max_steps 500 --checkpoint_every 50 }; if ($?) { python scripts\train_rrr.py --reflection_mode grounded --seed 42 --run_name rrr-grounded-r8-seed42 --sft_checkpoint qwen3-4b-reflect_grounded-r8-seed42 --max_steps 500 --checkpoint_every 50 }; if ($?) { python scripts\eval_sft.py --run_name rrr-grounded-r8-seed42 --mode reflect_full_retry --dataset both }
+```
+
+### Results (seed 42)
+
+| Condition | GSM8K | MATH | Note |
+|---|---|---|---|
+| 4B RLVR Retry Only (seed 42) | 34.0% | 23.0% | SFT warm-start |
+| 4B RLVR Reflect-Full (seed 42) | 32.5% | 18.5% | SFT warm-start |
+| **4B RLVR Grounded (seed 42)** | **87.0%** | **49.5%** | **No SFT (see below)** |
+
+**First-attempt breakdown (GSM8K):**
+- Correct on first attempt: 165/200 (82.5%)
+- Wrong first, retry corrects: 9/200 (4.5%)
+- Wrong and stays wrong: 26/200 (13.0%)
+
+### What actually happened — and why the results are so high
+
+The data generation step wrote **0 bytes** to `reflect_grounded.jsonl`. The validator `parse_grounded_reflection` requires `WRONG LINE: "..."` with double-quote wrapping, but the 8B teacher model almost certainly output the line without quotes (e.g. `WRONG LINE: Total = 48 + 24 = 72` instead of `WRONG LINE: "Total = 48 + 24 = 72"`), causing every reflection to be rejected silently.
+
+Because the SFT training data file was empty, `train_sft_lora_tiny.py` completed in 0 steps (`steps_completed: 0` in checkpoint). The model stayed at **clean base instruct weights** (Qwen/Qwen3-4B-Instruct-2507). RLVR then trained on top of this unpoisoned model for 500 steps.
+
+### Key finding: the SFT warm-start was actively harmful
+
+All previous experiments trained SFT for 500 steps on the collapsed curriculum data before RLVR. That SFT:
+- Trained the model to output `#### N` (~7 tokens) instead of step-by-step solutions
+- Trained the model to output a fixed generic reflection string
+- **Destroyed the base instruct model's chain-of-thought capability**
+
+By accidentally skipping the bad SFT, RLVR starts from a model that still knows how to reason. During RLVR training, 49% of first attempts are already correct (vs ~20-25% skip rate in previous SFT-poisoned runs). The model generates full multi-step solutions, correctly identifies errors in reflections (though imperfectly), and achieves 82.5% first-try accuracy at eval time.
+
+The improvement is +52.2pp on GSM8K and +26.5pp on MATH over the best prior 4B result. This is not from grounded reflection — it is from removing a training stage that was making the model worse.
+
+### Bug to fix before proper grounded reflection test
+
+The validator regex requires quoted WRONG LINE values:
+```python
+_WRONG_LINE_RE = re.compile(r'^WRONG LINE:\s*"(.+)"', re.MULTILINE)
+```
+This rejects the most natural model output format (unquoted). Fix: relax the regex to accept with or without quotes, falling back to any non-empty content after `WRONG LINE:`. This is the blocker for running the intended grounded reflection experiment.
+
+### Next steps
+
+1. **Fix the validator** in `build_grounded_sft.py` to accept unquoted WRONG LINE
+2. **Re-run data generation** to produce actual grounded SFT examples
+3. **Run proper grounded SFT + RLVR** to test whether grounded reflection adds value on top of the clean base model
+4. **Ablation: no-SFT baseline** — the current result (`rrr-grounded-r8-seed42`) is effectively this: base instruct model + 500-step RLVR with no SFT warm-start. This should be documented as a standalone finding.

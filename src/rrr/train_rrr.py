@@ -38,6 +38,7 @@ from typing import List, Optional
 from src.rrr.rrr_infer import (
     build_reflection_prompt,
     build_retry_prompt,
+    build_retry_prompt_grounded,
     build_solve_prompt,
     parse_gt_final,
     parse_pred_final,
@@ -583,7 +584,8 @@ def train_rrr(
         for (ex, q, dataset, gt, seed_base, solve_text, p1), fut in zip(wrong_batch, reflect_futures):
             try:
                 reflect_text = _decode_future(fut, tokenizer)
-                # Clamp to first 3 lines (matches RRR eval behaviour)
+                # Clamp to first 3 lines for old-style prompts (matches RRR eval behaviour).
+                # Grounded reflections are also 3 lines but formatted differently — still safe to clamp.
                 reflect_text = "\n".join(reflect_text.splitlines()[:3]).strip()
                 reflect_batch.append((ex, q, dataset, gt, seed_base, solve_text, p1, reflect_text))
             except Exception as exc:
@@ -593,7 +595,9 @@ def train_rrr(
         retry_futures = [
             _fire_sample(
                 sampling_client, tokenizer,
-                build_retry_prompt(q, reflect_text, dataset),
+                (build_retry_prompt_grounded(q, reflect_text, dataset)
+                 if reflection_mode == "grounded"
+                 else build_retry_prompt(q, reflect_text, dataset)),
                 types, tinker,
                 max_new_tokens=retry_max_tokens,
                 temperature=temperature, top_p=top_p,

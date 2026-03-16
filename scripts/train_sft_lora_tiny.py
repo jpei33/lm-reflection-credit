@@ -284,11 +284,13 @@ def parse_args() -> argparse.Namespace:
     # -- Experimental condition --
     ap.add_argument("--mode", default=None,
                     choices=["baseline_solve", "retry_only",
-                             "reflect_full_retry", "reflect_plan_retry"],
+                             "reflect_full_retry", "reflect_plan_retry",
+                             "reflect_grounded"],
                     help=(
                         "Training condition. Auto-sets --train_jsonl to "
                         "data/processed/curriculum/{mode}.jsonl and includes "
-                        "the mode name in --run_name."
+                        "the mode name in --run_name. "
+                        "'reflect_grounded' uses teacher-generated forced-quote reflections."
                     ))
 
     # -- Data --

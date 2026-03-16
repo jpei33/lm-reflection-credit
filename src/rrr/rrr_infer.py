@@ -413,6 +413,72 @@ def build_reflection_prompt_plan(
     )
 
 
+def build_reflection_prompt_grounded(
+    question: str,
+    solution: str,
+    pred_final: Optional[str],
+) -> str:
+    """
+    Grounded reflection prompt: forces the model to quote the exact wrong line
+    from the failed attempt, name the specific error, and state the correct value.
+
+    Unlike build_reflection_prompt_full, this:
+    - Includes the full failed solution (not omitted)
+    - Removes the "no digits" constraint — specific values are required
+    - Uses a forced-quote format that can't be answered generically
+    """
+    pf = _fmt_pred_final(pred_final)
+    return (
+        "You are reviewing a failed math solution.\n"
+        "The model's answer was wrong. Find the FIRST calculation mistake.\n\n"
+        f"Problem:\n{question}\n\n"
+        f"Failed attempt:\n{solution}\n\n"
+        f"Model's (wrong) answer: {pf}\n\n"
+        "Respond in EXACTLY this format (3 lines):\n"
+        'WRONG LINE: "<copy the exact line from the failed attempt where the first error occurs>"\n'
+        "WHY WRONG: <one sentence explaining the specific error in that line>\n"
+        "CORRECT VALUE: <what the result of that line should be>\n\n"
+        "Rules:\n"
+        "- WRONG LINE must be a verbatim quote from the failed attempt above\n"
+        "- Be specific about numbers, not generic (e.g. 'got 48 but should be 24')\n"
+        "- Focus on the FIRST error that caused the wrong final answer\n"
+    )
+
+
+def build_retry_prompt_grounded(question: str, reflection: str, dataset: str = "") -> str:
+    """
+    Retry prompt for use with grounded reflections.
+    Frames the reflection as a specific error correction rather than a checklist.
+    """
+    dataset = (dataset or "").lower()
+
+    if dataset == "math":
+        return (
+            "Your previous attempt was wrong. Here is the specific mistake:\n\n"
+            f"{reflection}\n\n"
+            "Now solve the problem from scratch, avoiding that exact mistake.\n"
+            "IMPORTANT:\n"
+            "- Put ONLY the final answer on the last line as \\boxed{...}.\n"
+            "- Do not write anything after the final line.\n\n"
+            f"Problem:\n{question}\n\n"
+            "Solution:\n"
+        )
+
+    # default: GSM8K-style
+    return (
+        "Your previous attempt was wrong. Here is the specific mistake:\n\n"
+        f"{reflection}\n\n"
+        "Now solve the problem from scratch, avoiding that exact mistake.\n"
+        "IMPORTANT:\n"
+        "- The FINAL line of your output must be exactly: #### <answer>\n"
+        "- Do NOT write '####' anywhere except the final line.\n"
+        "- Do not output \\boxed{}.\n"
+        "- Do not add any text after the final line.\n\n"
+        f"Problem:\n{question}\n\n"
+        "Solution (end with the final line):\n"
+    )
+
+
 def build_reflection_prompt(
     mode: str,
     question: str,
@@ -425,6 +491,8 @@ def build_reflection_prompt(
         return build_reflection_prompt_plan(question, pred_final, few_shot=few_shot)
     if mode == "tail":
         return build_reflection_prompt_tail(question, solution, pred_final, few_shot=few_shot)
+    if mode == "grounded":
+        return build_reflection_prompt_grounded(question, solution, pred_final)
     return build_reflection_prompt_full(question, solution, pred_final, few_shot=few_shot)
 
 

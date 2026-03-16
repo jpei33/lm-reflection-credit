@@ -85,10 +85,11 @@ def parse_args() -> argparse.Namespace:
                     help="Push updated weights to the sampling client every N steps.")
 
     # ── Reflection mode ───────────────────────────────────────────────────────
-    ap.add_argument("--reflection_mode", choices=["plan", "full", "tail"],
+    ap.add_argument("--reflection_mode", choices=["plan", "full", "tail", "grounded"],
                     default="plan",
                     help="Which reflection prompt style to use. "
-                         "Should match the SFT checkpoint's training mode.")
+                         "Should match the SFT checkpoint's training mode. "
+                         "'grounded' uses forced-quote format with teacher-quality SFT data.")
     ap.add_argument("--solve_token_weight", type=float, default=0.0,
                     help="Weight for first-pass solve tokens in the training loss. "
                          "0.0 (default) = solve is context only, no gradient. "
