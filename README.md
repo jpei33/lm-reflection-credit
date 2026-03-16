@@ -21,6 +21,96 @@ This repo investigates whether **step-local credit assignment** (predicting wher
 3. Run baseline, RRR, and step-credit experiments
 4. Generate plots
 
+## Experimental Setup & Reproducibility
+
+### Models
+
+| Role | Model ID | Parameters |
+|------|----------|-----------|
+| 4B student | `Qwen/Qwen3-4B-Instruct-2507` | 4B |
+| 8B student | `Qwen/Qwen3-8B` | 8B |
+
+### Datasets
+
+| Split | Source | Size | Use |
+|-------|--------|------|-----|
+| Train | GSM8K train | 7,473 problems | SFT curriculum + RLVR/GRPO online rollouts |
+| Train | MATH train | 7,500 problems | SFT curriculum + RLVR/GRPO online rollouts |
+| Eval | GSM8K held-out | 200 problems | All evaluation runs |
+| Eval | MATH held-out | 200 problems | All evaluation runs |
+
+SFT curriculum sizes after formatting: 14,971 examples (Baseline CoT / Retry Only), 29,942 examples (Reflect-Full / Reflect-Plan). RLVR and GRPO use the raw 14,973 training problems via online rollouts.
+
+### Hyperparameters
+
+All runs used default script values unless noted. No hyperparameter search was performed.
+
+**LoRA (shared across SFT, RLVR, GRPO)**
+
+| Parameter | Value |
+|-----------|-------|
+| Rank | 8 |
+| Trainable modules | Attention + MLP + unembed |
+| Seeds | 42, 0, 1 (3 runs per condition) |
+
+**SFT** (`scripts/train_sft_lora_tiny.py`)
+
+| Parameter | Value |
+|-----------|-------|
+| Learning rate | 2 × 10⁻⁴ |
+| Optimizer | AdamW (β₁=0.9, β₂=0.95) |
+| Weight decay | 0.0 |
+| Gradient clip | 1.0 |
+| Batch size | 4 examples × 4 grad-accum = **16 effective** |
+| Max sequence length | 1,024 tokens |
+| Training steps | 500 |
+| LR schedule | Constant (no warmup) |
+| Checkpoint selection | Final step (500); no early stopping |
+
+**RLVR** (`scripts/train_rrr.py`) — rejection-sampling fine-tuning
+
+| Parameter | Value |
+|-----------|-------|
+| Learning rate | 1 × 10⁻⁵ |
+| Optimizer | AdamW (β₁=0.9, β₂=0.95) |
+| Weight decay | 0.0 |
+| Gradient clip | 1.0 |
+| Problems per step | 4 |
+| Rollout selection | Keep correct trajectories only (rejection sampling) |
+| Solve / retry temperature | 0.7 |
+| Reflect temperature | 0.4 |
+| top-p | 0.95 |
+| Max tokens: solve / reflect / retry | 512 / 192 / 512 |
+| Max sequence length | 1,024 tokens |
+| Training steps | 500 |
+| Checkpoint selection | Final step (500); no early stopping |
+
+**GRPO** (`scripts/train_rrr_grpo.py`)
+
+| Parameter | Value |
+|-----------|-------|
+| Learning rate | 5 × 10⁻⁷ |
+| Optimizer | AdamW (β₁=0.9, β₂=0.95) |
+| Weight decay | 0.0 |
+| Gradient clip | 1.0 |
+| Problems per step | 4 |
+| Rollouts per group (K) | 8 |
+| Advantage normalisation | Standard GRPO (within-group, no KL penalty) |
+| Clip negative advantages | No (default) |
+| Solve / retry temperature | 0.7 |
+| Reflect temperature | 0.7 |
+| top-p | 0.95 |
+| Max tokens: solve / reflect / retry | 512 / 192 / 512 |
+| Max sequence length | 1,024 tokens |
+| Training steps | 500 |
+| Checkpoint selection | Final step (500); no early stopping |
+
+### Compute
+
+Training was performed via the [Tinker](https://tinkercademy.com) cloud training API. Wall-clock GPU hours were not recorded by the logging infrastructure (no timestamps in train logs or checkpoint files). A rough lower bound based on checkpoint file modification timestamps is ~3h per 4B RLVR/GRPO run at 500 steps; 8B runs appear faster due to fewer skip-correct steps generating gradient. Total compute across all phases (15+ conditions × 3 seeds × SFT + RLVR/GRPO) is estimated at **~150–200 GPU-hours** on A100-class hardware, though this figure is not directly verified. Future work should add wall-time logging to the training scripts.
+
+---
+
 ## Phase 0: Pretrain Inference Results (Qwen/Qwen2.5-0.5B-Instruct)
 
 All runs logged to `results/` (ignored by git). Use `notebooks/` to plot.
