@@ -218,7 +218,9 @@ def _make_sampling_client(service, tokenizer_holder, tinker, types, base_model: 
         train_unembed=False,
     )
     tok = tc.get_tokenizer()
-    sc  = tc.save_weights_and_get_sampling_client(name=f"grounded-sft-{base_model.split('/')[-1]}")
+    # Use a timestamp suffix to avoid Tinker name collisions across re-runs.
+    unique_name = f"grounded-sft-{base_model.split('/')[-1]}-{int(time.time())}"
+    sc  = tc.save_weights_and_get_sampling_client(name=unique_name)
     return sc, tok
 
 
