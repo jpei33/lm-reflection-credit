@@ -87,6 +87,7 @@ def build_teacher_prompt(
     teacher can generate a maximally informative grounded reflection.
     """
     return (
+        "/no_think\n"
         "You are generating training data for a math tutoring model.\n"
         "A student solved a problem incorrectly. "
         "Identify the FIRST calculation mistake in their work.\n\n"
@@ -127,8 +128,10 @@ def parse_grounded_reflection(text: str) -> Optional[str]:
     The output is always normalised to include quotes around WRONG LINE.
     """
     text = (text or "").strip()
-    # Strip Qwen3 <think>...</think> blocks before parsing
+    # Strip Qwen3 <think>...</think> blocks before parsing.
+    # Also strip unclosed <think> blocks (model looped and never closed tag).
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    text = re.sub(r"<think>.*$", "", text, flags=re.DOTALL).strip()
 
     wl  = _WRONG_LINE_RE.search(text)
     ww  = _WHY_WRONG_RE.search(text)
