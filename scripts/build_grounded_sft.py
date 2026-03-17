@@ -524,6 +524,10 @@ def main() -> None:
     print(f"  Output               : {out_path}")
     print(f"{'='*60}")
 
+    if n_written == 0:
+        print("\n[FATAL] No SFT pairs were written. Exiting with error to stop pipeline.")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
