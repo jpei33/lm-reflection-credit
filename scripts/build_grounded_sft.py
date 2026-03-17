@@ -236,11 +236,16 @@ def _apply_chat_template(tokenizer, prompt: str) -> str:
 
 def _sample(sc, tokenizer, tinker, types, prompt: str,
             max_new_tokens: int = 512, temperature: float = 0.7,
-            top_p: float = 0.95, seed: int = 42) -> str:
+            top_p: float = 0.95, seed: int = 42,
+            system_prompt: str = None) -> str:
     """Sample one completion from a Tinker sampling client."""
+    messages = []
+    if system_prompt is not None:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
     try:
         prompt_ids = tokenizer.apply_chat_template(
-            [{"role": "user", "content": prompt}],
+            messages,
             tokenize=True, add_generation_prompt=True, return_tensors=None,
         )
     except Exception:
@@ -504,6 +509,7 @@ def main() -> None:
                     max_new_tokens=args.max_reflect_tokens,
                     temperature=args.teacher_temperature,
                     top_p=0.95,
+                    system_prompt="/no_think",
                     seed=args.seed + idx + 10_000,
                 )
             except Exception as exc:
