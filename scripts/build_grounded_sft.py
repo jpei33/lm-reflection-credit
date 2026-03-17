@@ -236,18 +236,27 @@ def _sample(sc, tokenizer, tinker, types, prompt: str,
             max_new_tokens: int = 512, temperature: float = 0.7,
             top_p: float = 0.95, seed: int = 42) -> str:
     """Sample one completion from a Tinker sampling client."""
-    formatted = _apply_chat_template(tokenizer, prompt)
+    try:
+        prompt_ids = tokenizer.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True, add_generation_prompt=True, return_tensors=None,
+        )
+    except Exception:
+        prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
+    if hasattr(prompt_ids, "tolist"):
+        prompt_ids = prompt_ids.tolist()
     fut = sc.sample(
-        types.SamplingRequest(
-            formatted,
-            max_new_tokens=max_new_tokens,
+        prompt=types.ModelInput.from_ints(prompt_ids),
+        num_samples=1,
+        sampling_params=tinker.SamplingParams(
+            max_tokens=max_new_tokens,
             temperature=temperature,
             top_p=top_p,
             seed=seed,
-        )
+        ),
     )
     result = fut.result()
-    ids    = result.completion_token_ids
+    ids = result.sequences[0].tokens
     return tokenizer.decode(ids, skip_special_tokens=True).strip()
 
 
