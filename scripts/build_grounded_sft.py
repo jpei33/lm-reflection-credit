@@ -100,6 +100,7 @@ def build_teacher_prompt(
         "WHY WRONG: <one sentence explaining the specific arithmetic or algebraic error>\n"
         "CORRECT VALUE: <what the result of that line should actually be>\n\n"
         "Rules:\n"
+        "- You MUST start your first line with exactly 'WRONG LINE: ' (including the colon and space)\n"
         "- WRONG LINE must be verbatim from the wrong attempt (put it in quotes)\n"
         "- Be specific about numbers (e.g. 'got 48 but should be 24')\n"
         "- Focus on the FIRST error, not the final answer\n"
@@ -137,11 +138,16 @@ def parse_grounded_reflection(text: str) -> Optional[str]:
     ww  = _WHY_WRONG_RE.search(text)
     cv  = _CORRECT_VAL_RE.search(text)
 
+    # Fallback: model sometimes omits "WRONG LINE:" label and just outputs
+    # a quoted string on the first line (possibly multi-line quoted block).
+    if not wl and ww and cv:
+        wl = re.search(r'^"([\s\S]+?)"', text.strip())
+
     if not (wl and ww and cv):
         return None
 
     # Prefer quoted capture group, fall back to unquoted
-    wrong_line    = (wl.group(1) or wl.group(2) or "").strip().strip('"').strip()
+    wrong_line    = (wl.group(1) or (wl.group(2) if wl.lastindex and wl.lastindex >= 2 else None) or "").strip().strip('"').strip()
     why_wrong     = ww.group(1).strip()
     correct_value = cv.group(1).strip()
 
