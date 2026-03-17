@@ -1111,81 +1111,34 @@ The one hypothetical experiment it gestures at — GRPO from clean base instruct
 
 ---
 
-## LaTeX Tables
+## Results Tables
 
-Publication-ready LaTeX tables are auto-generated from eval JSONL files using `scripts/gen_latex_tables.py`. Run:
-
-```powershell
-python scripts\gen_latex_tables.py --out results\tables.tex
-```
-
-Or generate a single table:
-
-```powershell
-python scripts\gen_latex_tables.py --table 1   # Main 4B results
-python scripts\gen_latex_tables.py --table 2   # Scaling 4B→8B
-python scripts\gen_latex_tables.py --table 3   # pass@k / majority@k (requires BoN eval files)
-python scripts\gen_latex_tables.py --table 4   # GRPO × model-size interaction
-```
-
-All tables use booktabs rules (`\toprule / \midrule / \bottomrule`), `\pm` for mean±std, **bold** for column-best, and `†` for results within 1 std of best. Numbers are computed live from `results/runs/*.jsonl` — re-running the script after new eval files are added will update all tables automatically.
+Publication-ready LaTeX source is auto-generated from eval JSONL files: `python scripts\gen_latex_tables.py --out results\tables.tex`. Numbers below are computed from `results/runs/*.jsonl`. Bold = column/row best.
 
 ---
 
 ### Table 1 — Main 4B Results
 
-System accuracy (first-try OR retry correct), mean ± std across 3 seeds. SFT columns are blank (SFT checkpoints were not evaluated in isolation; they are the warm-start for RLVR/GRPO runs).
+System accuracy (first-try OR retry correct), mean ± std across 3 seeds. All models: Qwen3-4B-Instruct-2507, LoRA rank 8. SFT columns blank — checkpoints were not evaluated in isolation (they are the warm-start for RLVR/GRPO).
 
-```latex
-\begin{table}[t]
-  \centering
-  \caption{System accuracy (first-try OR retry correct) on GSM8K and MATH
-           (200 examples each), mean $\pm$ std across 3 random seeds.
-           \textbf{Bold} = column best; $^\dag$ = within 1\,std of best.
-           All models: Qwen3-4B-Instruct-2507, LoRA rank\,8.}
-  \label{tab:main_results}
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{lcccccc}
-    \toprule
-    & \multicolumn{2}{c}{\textbf{SFT}} & \multicolumn{2}{c}{\textbf{RLVR}} & \multicolumn{2}{c}{\textbf{GRPO}} \\
-    \cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7}
-    \textbf{Condition} & GSM8K & MATH & GSM8K & MATH & GSM8K & MATH \\
-    \midrule
-    Baseline CoT & $---$ & $---$ & $---$ & $---$ & $---$ & $---$ \\
-    Retry Only & $---$ & $---$ & $\textbf{34.5 \pm 1.3}$ & $\textbf{19.2 \pm 3.3}$ & $\textbf{34.8 \pm 0.3}$ & $\textbf{20.7 \pm 0.6}$ \\
-    Reflect-Full+Retry & $---$ & $---$ & $32.5$ & $18.7 \pm 0.3$ & $29.2 \pm 0.3$ & $17.0 \pm 0.5$ \\
-    Reflect-Plan+Retry & $---$ & $---$ & $27.7 \pm 2.0$ & $16.2 \pm 0.8$ & $---$ & $---$ \\
-    Step Credit & $---$ & $---$ & $31.3 \pm 2.1$ & $17.3 \pm 0.6$ & $---$ & $---$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-```
+| Condition | SFT GSM8K | SFT MATH | RLVR GSM8K | RLVR MATH | GRPO GSM8K | GRPO MATH |
+|---|---|---|---|---|---|---|
+| Baseline CoT | — | — | — | — | — | — |
+| Retry Only | — | — | **34.5 ± 1.3** | **19.2 ± 3.3** | **34.8 ± 0.3** | **20.7 ± 0.6** |
+| Reflect-Full+Retry | — | — | 32.5 | 18.7 ± 0.3 | 29.2 ± 0.3 | 17.0 ± 0.5 |
+| Reflect-Plan+Retry | — | — | 27.7 ± 2.0 | 16.2 ± 0.8 | — | — |
+| Step Credit | — | — | 31.3 ± 2.1 | 17.3 ± 0.6 | — | — |
 
 ---
 
 ### Table 2 — Scaling: 4B vs 8B
 
-```latex
-\begin{table}[t]
-  \centering
-  \caption{Scaling results: 4B vs 8B model, RLVR vs GRPO.
-           Mean $\pm$ std across 3 seeds. \textbf{Bold} = row best.}
-  \label{tab:scaling}
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{lcccccccc}
-    \toprule
-    & \multicolumn{4}{c}{\textbf{4B (Qwen3-4B-Instruct-2507)}} & \multicolumn{4}{c}{\textbf{8B (Qwen3-8B)}} \\
-    \cmidrule(lr){2-5} \cmidrule(lr){6-9}
-    & \multicolumn{2}{c}{RLVR} & \multicolumn{2}{c}{GRPO} & \multicolumn{2}{c}{RLVR} & \multicolumn{2}{c}{GRPO} \\
-    \cmidrule(lr){2-3} \cmidrule(lr){4-5} \cmidrule(lr){6-7} \cmidrule(lr){8-9}
-    \textbf{Condition} & GSM8K & MATH & GSM8K & MATH & GSM8K & MATH & GSM8K & MATH \\
-    \midrule
-    Retry Only & $34.5 \pm 1.3$ & $19.2 \pm 3.3$ & $34.8 \pm 0.3$ & $20.7 \pm 0.6$ & $\textbf{35.5 \pm 1.7}$ & $\textbf{21.7 \pm 0.3}$ & $---$ & $---$ \\
-    Reflect-Full & $32.5$ & $18.7 \pm 0.3$ & $29.2 \pm 0.3$ & $17.0 \pm 0.5$ & $34.8 \pm 0.6$ & $\textbf{22.2 \pm 0.8}$ & $\textbf{35.5 \pm 0.9}$ & $21.2 \pm 0.3$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-```
+Mean ± std across 3 seeds. Bold = row best.
+
+| Condition | 4B RLVR GSM8K | 4B RLVR MATH | 4B GRPO GSM8K | 4B GRPO MATH | 8B RLVR GSM8K | 8B RLVR MATH | 8B GRPO GSM8K | 8B GRPO MATH |
+|---|---|---|---|---|---|---|---|---|
+| Retry Only | 34.5 ± 1.3 | 19.2 ± 3.3 | 34.8 ± 0.3 | 20.7 ± 0.6 | **35.5 ± 1.7** | **21.7 ± 0.3** | — | — |
+| Reflect-Full+Retry | 32.5 | 18.7 ± 0.3 | 29.2 ± 0.3 | 17.0 ± 0.5 | 34.8 ± 0.6 | **22.2 ± 0.8** | **35.5 ± 0.9** | 21.2 ± 0.3 |
 
 ---
 
@@ -1193,54 +1146,20 @@ System accuracy (first-try OR retry correct), mean ± std across 3 seeds. SFT co
 
 Populates automatically once `bon_baseline_cot_n{k}_{dataset}.jsonl` files exist in `results/runs/`. Currently blank pending a BoN eval sweep.
 
-```latex
-\begin{table}[t]
-  \centering
-  \caption{Inference-only baselines (Baseline CoT, no training) vs RLVR-trained
-           model. pass@$k$ = oracle accuracy with $k$ samples;
-           maj@$k$ = majority-vote accuracy (deployable, no oracle).}
-  \label{tab:bon}
-  \setlength{\tabcolsep}{5pt}
-  \begin{tabular}{lcccccccccc}
-    \toprule
-    & \multicolumn{5}{c}{\textbf{GSM8K}} & \multicolumn{5}{c}{\textbf{MATH}} \\
-    \cmidrule(lr){2-6} \cmidrule(lr){7-11}
-    \textbf{Model} & $k$=1 & $k$=2 & $k$=3 & $k$=8 & $k$=16 & $k$=1 & $k$=2 & $k$=3 & $k$=8 & $k$=16 \\
-    \midrule
-    pass@$k$ (Baseline CoT) & --- & --- & --- & --- & --- & --- & --- & --- & --- & --- \\
-    maj@$k$  (Baseline CoT) & --- & --- & --- & --- & ---  & --- & --- & --- & --- & ---  \\
-    \midrule
-    RLVR Baseline CoT ($k$=1) & \textbf{---} & --- & --- & --- & --- & \textbf{---} & --- & --- & --- & --- \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-```
+| Model | GSM8K k=1 | GSM8K k=2 | GSM8K k=3 | GSM8K k=8 | GSM8K k=16 | MATH k=1 | MATH k=2 | MATH k=3 | MATH k=8 | MATH k=16 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| pass@k (Baseline CoT) | — | — | — | — | — | — | — | — | — | — |
+| maj@k (Baseline CoT) | — | — | — | — | — | — | — | — | — | — |
+| RLVR Retry Only (k=1) | — | — | — | — | — | — | — | — | — | — |
 
 ---
 
 ### Table 4 — Algorithm × Model-Size Interaction (Reflect-Full+Retry)
 
-The capacity story: GRPO lags RLVR at 4B (sparse reward amplifies noise) but recovers at 8B (base model generates enough correct reflections to stabilise GRPO's within-group normalisation).
+GRPO lags RLVR at 4B (sparse reward amplifies noise) but recovers at 8B (base model generates enough correct reflections to stabilise GRPO's within-group normalisation).
 
-```latex
-\begin{table}[t]
-  \centering
-  \caption{Algorithm $\times$ model-size interaction for Reflect-Full+Retry.
-           GRPO lags RLVR at 4B but recovers at 8B,
-           consistent with reward-sparsity explanation.}
-  \label{tab:capacity_interaction}
-  \setlength{\tabcolsep}{6pt}
-  \begin{tabular}{lcccc}
-    \toprule
-    & \multicolumn{2}{c}{\textbf{4B}} & \multicolumn{2}{c}{\textbf{8B}} \\
-    \cmidrule(lr){2-3} \cmidrule(lr){4-5}
-    \textbf{Algorithm} & GSM8K & MATH & GSM8K & MATH \\
-    \midrule
-    RLVR & $\textbf{32.5}$ & $\textbf{18.7 \pm 0.3}$ & $34.8 \pm 0.6$ & $\textbf{22.2 \pm 0.8}$ \\
-    GRPO & $29.2 \pm 0.3$ & $17.0 \pm 0.5$ & $\textbf{35.5 \pm 0.9}$ & $21.2 \pm 0.3$ \\
-    \midrule
-    $\Delta$ (RLVR$-$GRPO) & $+3.3$ & $+1.7$ & $-0.7$ & $+1.0$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-```
+| Algorithm | 4B GSM8K | 4B MATH | 8B GSM8K | 8B MATH |
+|---|---|---|---|---|
+| RLVR | **32.5** | **18.7 ± 0.3** | 34.8 ± 0.6 | **22.2 ± 0.8** |
+| GRPO | 29.2 ± 0.3 | 17.0 ± 0.5 | **35.5 ± 0.9** | 21.2 ± 0.3 |
+| Δ (RLVR − GRPO) | +3.3 | +1.7 | −0.7 | +1.0 |
