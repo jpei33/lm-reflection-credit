@@ -243,8 +243,17 @@ def _sample(sc, tokenizer, tinker, types, prompt: str,
         )
     except Exception:
         prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
-    if hasattr(prompt_ids, "tolist"):
-        prompt_ids = prompt_ids.tolist()
+    # Unwrap BatchEncoding / tensors to a plain list[int]
+    if hasattr(prompt_ids, "input_ids"):
+        prompt_ids = prompt_ids.input_ids
+    elif isinstance(prompt_ids, dict) and "input_ids" in prompt_ids:
+        prompt_ids = prompt_ids["input_ids"]
+    if hasattr(prompt_ids, "ids"):
+        prompt_ids = [int(x) for x in prompt_ids.ids]
+    elif hasattr(prompt_ids, "tolist"):
+        prompt_ids = [int(x) for x in prompt_ids.tolist()]
+    else:
+        prompt_ids = [int(x) for x in prompt_ids]
     fut = sc.sample(
         prompt=types.ModelInput.from_ints(prompt_ids),
         num_samples=1,
