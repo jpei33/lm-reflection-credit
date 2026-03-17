@@ -127,6 +127,8 @@ def parse_grounded_reflection(text: str) -> Optional[str]:
     The output is always normalised to include quotes around WRONG LINE.
     """
     text = (text or "").strip()
+    # Strip Qwen3 <think>...</think> blocks before parsing
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
     wl  = _WRONG_LINE_RE.search(text)
     ww  = _WHY_WRONG_RE.search(text)
@@ -377,7 +379,7 @@ def main() -> None:
     ap.add_argument("--teacher_temperature", type=float, default=0.3,
                     help="Temperature for teacher reflection generation.")
     ap.add_argument("--max_solve_tokens",   type=int, default=512)
-    ap.add_argument("--max_reflect_tokens", type=int, default=256)
+    ap.add_argument("--max_reflect_tokens", type=int, default=1024)
     args = ap.parse_args()
 
     if not os.getenv("TINKER_API_KEY"):
@@ -512,6 +514,8 @@ def main() -> None:
             grounded_reflection = parse_grounded_reflection(raw_reflection)
             if grounded_reflection is None:
                 # Teacher didn't follow the format — skip
+                if n_wrong <= 3:  # Print first few failures for diagnosis
+                    print(f"  [parse_fail] raw teacher output for {qid}:\n---\n{raw_reflection}\n---")
                 continue
             n_parsed += 1
 
