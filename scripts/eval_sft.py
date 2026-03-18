@@ -194,8 +194,8 @@ def parse_args() -> argparse.Namespace:
     # -- Eval data --
     ap.add_argument(
         "--dataset", default="both",
-        choices=["gsm8k", "math", "both"],
-        help="Which test set(s) to evaluate on.",
+        choices=["gsm8k", "math", "svamp", "both"],
+        help="Which test set(s) to evaluate on. 'both' runs gsm8k+math.",
     )
     ap.add_argument("--limit", type=int, default=None,
                     help="Cap examples (useful for smoke tests).")
@@ -323,10 +323,11 @@ def main() -> None:
     datasets = {
         "gsm8k": data_dir / "gsm8k_test_200_seed0.jsonl",
         "math":  data_dir / "math_test_200_seed0.jsonl",
+        "svamp": data_dir / "svamp_test_200_seed0.jsonl",
     }
 
     to_eval = (
-        list(datasets.items())
+        [(k, v) for k, v in datasets.items() if k != "svamp"]
         if args.dataset == "both"
         else [(args.dataset, datasets[args.dataset])]
     )
