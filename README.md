@@ -1318,7 +1318,7 @@ System accuracy (first-try OR retry correct), mean ± std across 3 seeds. All mo
 
 | Condition | SFT GSM8K | SFT MATH | RLVR GSM8K | RLVR MATH | GRPO GSM8K | GRPO MATH |
 |---|---|---|---|---|---|---|
-| Baseline CoT | — | — | — | — | — | — |
+| Baseline CoT | — | — | 31.5 ± 2.0 | 17.2 ± 0.8 | 34.8 ± 0.3 | 15.3 ± 0.3 |
 | Retry Only | — | — | **34.5 ± 1.3** | 19.2 ± 3.3 | **34.8 ± 0.3** | **20.7 ± 0.6** |
 | Reflect-Full+Retry | — | — | 32.5 | 18.7 ± 0.3 | 29.2 ± 0.3 | 17.0 ± 0.5 |
 | Reflect-Plan+Retry | — | — | 27.7 ± 2.0 | 16.2 ± 0.8 | — | — |
@@ -1340,12 +1340,12 @@ Mean ± std across 3 seeds. Bold = row best.
 
 ### Table 3 — Inference Baselines (pass@k / majority@k)
 
-Grounded reflection RLVR (seed 42) vs untrained baseline GRPO (seed 42). Baseline CoT numbers pending.
+Grounded reflection RLVR (seed 42) vs baseline GRPO-SFT (seed 42, single-attempt solve, no RL).
 
 | Model | GSM8K k=1 | GSM8K k=2 | GSM8K k=3 | GSM8K k=8 | GSM8K k=16 | MATH k=1 | MATH k=2 | MATH k=3 | MATH k=8 | MATH k=16 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| pass@k (Baseline CoT) | — | — | — | — | — | — | — | — | — | — |
-| maj@k (Baseline CoT) | — | — | — | — | — | — | — | — | — | — |
+| pass@k (Baseline CoT) | 12.7% | 13.5% | 15.5% | 22.5% | 25.2% | 16.0% | 19.0% | 22.5% | 29.0% | 35.5% |
+| maj@k (Baseline CoT) | 12.7% | 11.8% | 11.5% | 11.5% | 11.8% | 16.0% | 16.0% | 16.0% | 16.0% | 15.0% |
 | pass@k (Grounded Reflection RLVR) | 33.5% | 48.5% | 52.5% | 69.5% | **79.0%** | 31.0% | 38.5% | 40.0% | 48.0% | **51.0%** |
 | maj@k (Grounded Reflection RLVR) | 33.5% | 34.5% | 32.5% | 43.0% | **46.0%** | 31.0% | 34.5% | 39.0% | 42.0% | **43.5%** |
 | pass@k (Baseline GRPO) | 12.7% | 13.5% | 15.5% | 22.5% | 25.2% | 16.0% | 19.0% | 22.5% | 29.0% | 35.5% |
