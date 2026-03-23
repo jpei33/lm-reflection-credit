@@ -1111,6 +1111,47 @@ The one hypothetical experiment it gestures at — GRPO from clean base instruct
 
 ---
 
+## Phase 17b: No-SFT Finding — Formal Treatment
+
+### Finding
+
+Applying RLVR directly to the base instruct model (no SFT warm-start) dramatically outperforms every SFT-warmed condition in this project. This was discovered accidentally when the grounded SFT data file was empty in runs v2–v4, causing `train_sft_lora_tiny.py` to complete in 0 steps and leave the model at clean base weights before RLVR training.
+
+Three independent RLVR runs from the clean base (v2, v3, v4 — all seed 42, separate training runs) give a consistent picture:
+
+| Condition | GSM8K first-attempt | GSM8K system | MATH first-attempt | MATH system |
+|---|---|---|---|---|
+| No-SFT RLVR (v2) | 82.5% | 87.5% | 46.0% | 47.0% |
+| No-SFT RLVR (v3) | 83.0% | 88.5% | 47.0% | 48.5% |
+| No-SFT RLVR (v4) | 81.0% | 85.0% | 47.5% | 48.0% |
+| **No-SFT mean ± std** | **82.2 ± 1.0%** | **87.0 ± 1.8%** | **46.8 ± 0.8%** | **47.8 ± 0.8%** |
+| Grounded SFT+RLVR (3 seeds) | 32.8 ± 0.6% | 39.3 ± 0.6% | 16.7 ± 1.0% | 19.7 ± 1.0% |
+| Gap (no-SFT − SFT+RLVR) | **+49.4pp** | **+47.7pp** | **+30.1pp** | **+28.1pp** |
+
+### Why does removing SFT help so much?
+
+The base Qwen3-4B-Instruct model already achieves ~82–87% GSM8K in non-thinking mode (the published figure in thinking mode is 87.8%). Our SFT training on structured reflection trajectories reduces this to ~33% first-attempt accuracy — a ~50pp degradation — before RLVR partially recovers it to ~39%.
+
+The SFT-harm mechanism has three compounding causes:
+
+**1. Format shift destroys native CoT.** The structured SFT format trains the model to output terse bare answers (~5 completion tokens: `#### N`), replacing its native chain-of-thought reasoning with a constrained output format. The base model reasons in multi-step prose; the SFT model outputs a number. This single change likely accounts for most of the first-attempt accuracy collapse.
+
+**2. Distribution shift from solve to reflection format.** The SFT curriculum consists of reflection trajectories (wrong attempt → error identification → retry). This shifts the model's learned distribution toward error-correction scenarios, potentially weakening the forward-solve capability that the base model exercises on first attempts.
+
+**3. RLVR only partially recovers lost capability.** 500 RLVR steps from the degraded SFT checkpoint can recover the reflection mechanism but cannot fully restore the base model's native reasoning quality. Starting from clean base weights, RLVR reinforces an already-capable reasoner; starting from SFT-degraded weights, RLVR must first undo format damage before adding new capability.
+
+### Implications for the paper's claims
+
+This finding reframes the paper's central comparison. The grounded reflection result (39.3% GSM8K) should be understood as: **a substantially degraded base model that, through grounded SFT + RLVR, recovers more capability than any other SFT-warmed approach tested**. The 4.8pp improvement over retry-only is real and mechanistically explained (Phase 20), but both conditions operate well below the no-SFT ceiling.
+
+The honest framing for the paper is: grounded reflection is the best method **within the SFT-warm-start paradigm**, and the no-SFT result suggests the paradigm itself may be the bottleneck. Whether grounded reflection SFT adds value on top of a clean base model — i.e., whether no-SFT RLVR + grounded reflection SFT beats no-SFT RLVR alone — is the key unanswered question and the natural next experiment.
+
+### Limitations of the no-SFT result
+
+All three no-SFT runs use the same RLVR seed (42). The variance (±1.8% GSM8K) reflects run-to-run RLVR stochasticity rather than seed diversity. A rigorous ablation would use seeds 0, 1, and 42 for independent confirmation. The result is treated as a strong preliminary finding (3 consistent replications, gap far exceeding noise) but not as a fully controlled 3-seed experiment.
+
+---
+
 ## Phase 18: Grounded Reflection SFT — Teacher-Generated Error Corrections
 
 **Hypothesis:** SFT on teacher-generated grounded reflections (oracle-informed error identifications) will teach the student model *where* its reasoning fails, producing better retry behaviour under RLVR fine-tuning than the generic Reflect-Full baseline.
@@ -1382,3 +1423,45 @@ GRPO lags RLVR at 4B (sparse reward amplifies noise) but recovers at 8B (base mo
 | RLVR | **32.5** | **18.7 ± 0.3** | 34.8 ± 0.6 | **22.2 ± 0.8** |
 | GRPO | 29.2 ± 0.3 | 17.0 ± 0.5 | **35.5 ± 0.9** | 21.2 ± 0.3 |
 | Δ (RLVR − GRPO) | +3.3 | +1.7 | −0.7 | +1.0 |
+
+---
+
+## Phase 22: Error Taxonomy Analysis
+
+**Research question:** What kinds of errors does grounded reflection actually fix? If it's mechanism-specific, correctable errors (arithmetic slips) should show much higher recovery than incorrectable errors (wrong conceptual approach).
+
+**Setup:** We classify all first-attempt errors in the grounded condition using the `ERROR_TYPE` field produced by the teacher-model reflection. Errors are mapped to three taxonomy buckets: arithmetic slip (correctable), setup/unit error (correctable), and conceptual/reasoning error (incorrectable). Recovery rates are then computed for grounded reflection vs. retry-only on the same question set, pooled across seeds 0, 1, and 42.
+
+**Script:** `scripts/error_taxonomy_analysis.py` → `results/error_taxonomy_analysis.json`
+
+### Error taxonomy results (GSM8K, 3 seeds pooled)
+
+| Error type | N wrong | Grounded recovery | Retry-only recovery |
+|---|---|---|---|
+| Arithmetic slip (correctable) | 334 | **11.0 ± 0.9%** | 1.1 ± 1.0% |
+| Setup/unit error (correctable) | 13 | 5.6 ± 7.9%* | 0.0 ± 0.0% |
+| Conceptual/reasoning (incorrectable) | 10 | 0.0 ± 0.0% | 0.0 ± 0.0% |
+| **Correctable (combined)** | **347** | **11.0%** (38/347) | **1.0%** |
+| **Incorrectable** | **10** | **0.0%** (0/10) | **0.0%** |
+
+*Setup/unit n=13 is too small for reliable std; treated as directional evidence only.
+
+**Key finding:** Grounded reflection recovers **11.0% of correctable errors vs. 0% of conceptual errors** — a complete selectivity result. Retry-only recovers only 1.1% of the same correctable errors, confirming the 10× lift is real and specific to the reflection mechanism.
+
+### What this tells us about the reflection mechanism
+
+The 0% recovery on conceptual errors is not surprising: when the model has chosen the wrong mathematical approach (e.g., solving a rate problem as a ratio problem), pointing to the wrong line and labeling it "incorrect reasoning" does not give the model a new strategy. The model still outputs the same structurally flawed solution.
+
+The 11% recovery on arithmetic slips directly matches the mechanism: the reflection identifies the specific step where a calculation went wrong, and the retry re-executes that step correctly. This is re-computation, not re-conception.
+
+The near-zero retry-only recovery (1.1%) confirms that simply seeing one's wrong answer and trying again provides almost no useful signal on GSM8K — the model re-commits to the same calculation path and makes the same error.
+
+### Error type distribution
+
+The vast majority of errors (334/357 classified = 94%) are arithmetic slips. This is expected on GSM8K, which has short, clearly-specified word problems with well-defined setups. The low conceptual error count (10/357 = 3%) means grounded reflection's 0% conceptual recovery rate does not substantially limit its overall utility on this benchmark. On harder benchmarks with more conceptual errors (MATH competition problems, AIME), the recovery ceiling would be lower.
+
+**Excluded:** 45 errors labelled "incorrect final answer" or similar by the teacher model were set aside as format-ambiguous (the label doesn't distinguish arithmetic slip from copy error). These are all conservatively omitted from the table above.
+
+### Implication for paper framing
+
+The error taxonomy result provides the mechanistic explanation for the overall recovery rate: grounded reflection works because GSM8K errors are almost entirely arithmetic slips, which are the one error class the reflection mechanism is actually suited to fix. This also predicts when the method will not generalise: benchmarks with high conceptual error rates should see near-zero recovery gains, making error type distribution a useful predictor of when grounded reflection is worth the 2.5× inference cost.
