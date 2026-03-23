@@ -1111,6 +1111,65 @@ The one hypothetical experiment it gestures at — GRPO from clean base instruct
 
 ---
 
+## Phase 18: Grounded Reflection SFT — Teacher-Generated Error Corrections
+
+**Hypothesis:** SFT on teacher-generated grounded reflections (oracle-informed error identifications) will teach the student model *where* its reasoning fails, producing better retry behaviour under RLVR fine-tuning than the generic Reflect-Full baseline.
+
+### Setup
+
+A two-model pipeline generates the SFT data:
+
+1. **Student** (Qwen3-4B-Instruct-2507) attempts each training problem with temperature 0.8.
+2. If wrong, **Teacher** (Qwen3-8B, `/no_think` mode) sees the student's failed attempt plus the correct answer and generates a grounded reflection in a structured 3-line format:
+   ```
+   WRONG LINE: "<verbatim line where first error occurs>"
+   WHY WRONG: <one sentence explaining the specific arithmetic/algebraic error>
+   CORRECT VALUE: <what that line's result should be>
+   ```
+3. Parsed pairs are written as SFT training examples (wrong attempt → grounded reflection).
+
+2,000 problems attempted per seed; ~33% student wrong rate; ~99% teacher parse rate → ~650 grounded SFT pairs per seed.
+
+### Results (3 seeds, mean ± std)
+
+System accuracy (first-try OR retry correct):
+
+| Seed | GSM8K | MATH |
+|---|---|---|
+| 0 | 39.0% | 20.5% |
+| 1 | 39.0% | 19.0% |
+| 42 | 40.0% | 20.0% |
+| **Mean ± std** | **39.3 ± 0.5** | **19.8 ± 0.6** |
+
+### Comparison to Reflect-Full+Retry baseline (RLVR, no grounded SFT)
+
+| Condition | GSM8K | MATH |
+|---|---|---|
+| Reflect-Full+Retry (RLVR, generic) | 32.5 | 18.7 ± 0.3 |
+| **Grounded Reflection (this phase)** | **39.3 ± 0.5** | **19.8 ± 0.6** |
+| Δ | **+6.8pp** | **+1.1pp** |
+
+### Analysis
+
+The grounded reflection SFT produces a substantial GSM8K improvement (+6.8pp) and a modest MATH improvement (+1.1pp). The GSM8K gain is large enough to make grounded reflection competitive with the Retry Only baseline (39.3 vs 34.5), suggesting the structured error identification is providing genuine signal beyond the reflection format alone.
+
+The asymmetry between GSM8K and MATH gains is consistent with the teacher model's oracle advantage being more useful on arithmetic-heavy problems (GSM8K) than on symbolic/algebraic problems (MATH), where the WRONG LINE format is harder to populate accurately.
+
+**Implementation notes discovered during development:**
+- Tinker API changed: `types.SamplingRequest` removed; replaced with `types.ModelInput.from_ints()` + `tinker.SamplingParams()`
+- Qwen3-8B emits `<think>` blocks that loop infinitely without `/no_think` in the user message
+- Teacher frequently omits the `WRONG LINE:` label prefix; fallback regex handles bare quoted strings
+- PowerShell `if ($?)` resets after evaluating a conditional — must use `$LASTEXITCODE` for pipeline chaining
+
+### Actionable next steps
+
+**Yes.** Run SVAMP held-out generalization eval to test whether grounded reflection training generalises beyond GSM8K/MATH:
+```powershell
+python scripts\eval_sft.py --run_name rrr-grounded-r8-seed42-v7 --mode reflect_full_retry --dataset svamp
+```
+
+---
+
 ## Results Tables
 
 Publication-ready LaTeX source is auto-generated from eval JSONL files: `python scripts\gen_latex_tables.py --out results\tables.tex`. Numbers below are computed from `results/runs/*.jsonl`. Bold = column/row best.
@@ -1124,10 +1183,11 @@ System accuracy (first-try OR retry correct), mean ± std across 3 seeds. All mo
 | Condition | SFT GSM8K | SFT MATH | RLVR GSM8K | RLVR MATH | GRPO GSM8K | GRPO MATH |
 |---|---|---|---|---|---|---|
 | Baseline CoT | — | — | — | — | — | — |
-| Retry Only | — | — | **34.5 ± 1.3** | **19.2 ± 3.3** | **34.8 ± 0.3** | **20.7 ± 0.6** |
+| Retry Only | — | — | **34.5 ± 1.3** | 19.2 ± 3.3 | **34.8 ± 0.3** | **20.7 ± 0.6** |
 | Reflect-Full+Retry | — | — | 32.5 | 18.7 ± 0.3 | 29.2 ± 0.3 | 17.0 ± 0.5 |
 | Reflect-Plan+Retry | — | — | 27.7 ± 2.0 | 16.2 ± 0.8 | — | — |
 | Step Credit | — | — | 31.3 ± 2.1 | 17.3 ± 0.6 | — | — |
+| Grounded Reflection | — | — | **39.3 ± 0.5** | **19.8 ± 0.6** | — | — |
 
 ---
 
