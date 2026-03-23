@@ -124,9 +124,16 @@ def _answers_match(pred: Optional[str], gt: Optional[str]) -> bool:
 
 
 def _get_gt(row: dict) -> Optional[str]:
+    import re
     for key in ("answer", "gt_answer", "solution", "target"):
         if key in row and row[key] is not None:
-            return str(row[key]).strip()
+            val = str(row[key]).strip()
+            # GSM8K answers contain the full solution ending with "#### <number>".
+            # Extract just the numeric answer so it can be matched against model preds.
+            m = re.search(r"####\s*(.+)$", val, re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+            return val
     return None
 
 
