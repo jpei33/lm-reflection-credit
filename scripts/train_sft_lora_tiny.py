@@ -280,6 +280,11 @@ def parse_args() -> argparse.Namespace:
     # -- Model --
     ap.add_argument("--base_model", default="Qwen/Qwen3-4B-Instruct-2507",
                     help="Tinker base model identifier")
+    ap.add_argument("--warmstart_checkpoint", default=None,
+                    help="run_name of an existing checkpoint to warm-start weights from "
+                         "(e.g. an RLVR checkpoint). Creates a fresh LoRA client then "
+                         "loads weights via load_state, resetting the optimiser. "
+                         "Mutually exclusive with --resume.")
 
     # -- Experimental condition --
     ap.add_argument("--mode", default=None,
@@ -532,6 +537,19 @@ def main() -> None:
             train_unembed=args.train_unembed,
             user_metadata={"run_name": args.run_name, "seed": str(args.seed)},
         )
+        if args.warmstart_checkpoint:
+            import json as _json
+            from pathlib import Path as _Path
+            _meta_path = _REPO_ROOT / "results" / "runs" / f"{args.warmstart_checkpoint}.checkpoint.json"
+            if not _meta_path.exists():
+                raise FileNotFoundError(
+                    f"Warmstart checkpoint not found: {_meta_path}\n"
+                    f"Check the run_name passed to --warmstart_checkpoint."
+                )
+            _tinker_uri = _json.loads(_meta_path.read_text())["tinker_path"]
+            print(f"[tinker] loading warmstart weights from '{args.warmstart_checkpoint}' ...")
+            training_client.load_state(_tinker_uri).result()
+            print("[tinker] warmstart weights loaded (optimiser state reset).")
     print("[tinker] training client ready.")
 
     # -- Load tokenizer via Tinker (correct tokenizer for the remote model) -

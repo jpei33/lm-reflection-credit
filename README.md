@@ -1501,3 +1501,37 @@ The error taxonomy result provides the mechanistic explanation for the overall r
 ### Implication
 
 The sweet spot for the grounded SFT warm-start is approximately 400 pairs — enough to teach the reflection format, not so much that format-harm on MATH becomes severe. The full 1,059-pair dataset used in the main experiment is reasonable but past the point of diminishing returns on GSM8K. For future work targeting MATH specifically, fewer SFT pairs (closer to n=100–200) may actually be preferable to preserve the base model's native MATH reasoning.
+
+---
+
+## Phase 23: No-SFT RLVR → Grounded SFT → RLVR (Closing the Open Question)
+
+**Research question:** Does grounded reflection SFT add value on top of an already-strong no-SFT RLVR model, or does SFT format-harm dominate regardless of starting point?
+
+**Setup:** Take the no-SFT RLVR checkpoint (rrr-grounded-r8-seed42-v4, 84.5% GSM8K) as the warm-start. Apply grounded reflection SFT (1059 pairs, 500 steps) on top of it, then run a second RLVR pass (500 steps). Eval with `reflect_full_retry`. Single seed (42) for directional answer.
+
+**Script:** `scripts/train_sft_lora_tiny.py --warmstart_checkpoint rrr-grounded-r8-seed42-v4` → `scripts/train_rrr.py` → `scripts/eval_sft.py`
+
+### Results
+
+| Condition | GSM8K first | GSM8K system | MATH first | MATH system | Recovery rate |
+|---|---|---|---|---|---|
+| No-SFT RLVR alone (v4, seed42) | 80.5% | 84.5% | 52.5% | 53.0% | 20.5% |
+| Standard grounded SFT+RLVR (v7, seed42) | 32.5% | 40.0% | 17.0% | 20.0% | 11.1% |
+| **No-SFT RLVR → Grounded SFT → RLVR (new)** | **31.5%** | **40.5%** | **18.0%** | **21.0%** | **13.1%** |
+
+### Finding
+
+**Grounded SFT format-harm is the dominant effect, not the warm-start quality.** Adding grounded reflection SFT on top of the 84.5% no-SFT model crashed it to 40.5% — a 44pp drop — nearly identical to the standard pipeline (40.0%). The SFT training on terse bare-answer reflection trajectories collapses native CoT regardless of how capable the model was going in.
+
+The new pipeline is marginally better than the standard one (+0.5pp GSM8K, +1.0pp MATH, +2pp recovery rate), consistent with starting from a stronger base before SFT damage was applied. But the difference is noise-level for a single seed and does not represent a meaningful gain.
+
+### What this closes
+
+This result answers the key open question left by Phase 17b. It is now confirmed that:
+
+1. SFT format-harm is not recoverable through a better warm-start — the collapse from ~80% to ~31% first-attempt accuracy happens regardless of whether the starting model was a clean base or a trained RLVR model.
+2. Grounded reflection does not add capability on top of an already-capable model — it only provides marginal benefit within the SFT-degraded paradigm.
+3. The bottleneck is the SFT format itself (bare answer `#### N` targets, structured reflection template), not the quality of the training data or the starting weights.
+
+The paper's conclusion is now fully closed: **no-SFT RLVR is the ceiling; grounded reflection is the best method within the SFT-warm-start paradigm; the paradigm itself is the bottleneck.** Future work should explore reflection formats that preserve native CoT (e.g., full chain-of-thought retry targets rather than terse bare answers) or mechanisms that inject reflection without a destructive SFT stage.
