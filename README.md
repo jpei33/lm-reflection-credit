@@ -1465,3 +1465,37 @@ The vast majority of errors (334/357 classified = 94%) are arithmetic slips. Thi
 ### Implication for paper framing
 
 The error taxonomy result provides the mechanistic explanation for the overall recovery rate: grounded reflection works because GSM8K errors are almost entirely arithmetic slips, which are the one error class the reflection mechanism is actually suited to fix. This also predicts when the method will not generalise: benchmarks with high conceptual error rates should see near-zero recovery gains, making error type distribution a useful predictor of when grounded reflection is worth the 2.5× inference cost.
+
+---
+
+## Phase 21: Scaling Ablation — SFT Data Size vs. Downstream RLVR Accuracy
+
+**Research question:** How much grounded SFT data is actually needed? Does accuracy keep climbing with more pairs, or does the signal saturate early? This directly informs whether generating 5,000+ pairs would help.
+
+**Setup:** Five models trained on subsets of the same grounded SFT dataset (n=100/200/400/650/1059 pairs), each followed by identical 500-step RLVR training. All runs use seed 42, LoRA rank 8, same hyperparameters. Eval: 200 examples per dataset, `reflect_full_retry` mode.
+
+**Script:** `scripts/train_sft_lora_tiny.py --limit N` → `scripts/train_rrr.py` → `scripts/eval_sft.py`
+
+### Results
+
+| SFT pairs | GSM8K first | GSM8K system | MATH first | MATH system |
+|---|---|---|---|---|
+| 100 | 6.0% | 19.0% | 22.0% | 25.0% |
+| 200 | 26.0% | 32.0% | 17.0% | 23.5% |
+| 400 | 29.0% | **35.0%** | 16.5% | 19.0% |
+| 650 | 26.5% | 32.0% | 15.0% | 20.0% |
+| **1059** | **31.5%** | **36.5%** | **18.5%** | **20.5%** |
+
+### Key findings
+
+**GSM8K saturates around n=400.** The largest gain is n100→n200 (+13pp system accuracy), reflecting the model crossing a threshold where it has learned the reflection format well enough for RLVR to take hold. From n200 onward, gains are small and non-monotone (n400=35%, n650=32%, n1059=36.5%). The full dataset (n1059) is only 1.5pp above n400 — a 159% increase in training data for negligible return.
+
+**MATH degrades with more SFT data.** System accuracy falls from 25.0% (n100) to ~19–20% (n400–n1059). This is the SFT format-harm effect in action: more reflection training increasingly displaces the base model's native MATH chain-of-thought, and RLVR only partially recovers it. The n100 model hasn't been clobbered as badly and retains more of its base capability.
+
+**First-attempt accuracy tracks SFT scale on GSM8K** (6%→26%→29%→26%→31.5%), confirming that more SFT data teaches the model to attempt the format correctly more often. But this doesn't translate into proportional system accuracy gains because RLVR provides the bulk of the improvement regardless of SFT scale.
+
+**No need to generate 5,000 pairs.** The scaling curve is flat past n=400. The bottleneck is not data quantity but the RLVR training signal and the model's base capacity. Generating more SFT data would not be expected to yield further gains.
+
+### Implication
+
+The sweet spot for the grounded SFT warm-start is approximately 400 pairs — enough to teach the reflection format, not so much that format-harm on MATH becomes severe. The full 1,059-pair dataset used in the main experiment is reasonable but past the point of diminishing returns on GSM8K. For future work targeting MATH specifically, fewer SFT pairs (closer to n=100–200) may actually be preferable to preserve the base model's native MATH reasoning.
