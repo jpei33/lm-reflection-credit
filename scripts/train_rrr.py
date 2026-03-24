@@ -62,6 +62,8 @@ def parse_args() -> argparse.Namespace:
                     help="run_name of a saved SFT checkpoint to warm-start from. "
                          "Defaults to qwen3-4b-reflect_{reflection_mode}_retry-r{rank}-seed{seed} "
                          "if not provided.")
+    ap.add_argument("--no_sft", action="store_true",
+                    help="Skip SFT warm-start entirely and train from base model weights.")
     ap.add_argument("--run_name", default=None,
                     help="Name under which the RRR checkpoint is saved. "
                          "Defaults to rrr-{reflection_mode}-r{rank}-seed{seed}.")
@@ -134,7 +136,10 @@ def main() -> None:
     args = parse_args()
 
     # ── Auto-fill sft_checkpoint if not specified ─────────────────────────────
-    if args.sft_checkpoint is None:
+    if args.no_sft:
+        args.sft_checkpoint = None
+        print("[train_rrr] --no_sft set: skipping SFT warm-start, using base model weights.")
+    elif args.sft_checkpoint is None:
         args.sft_checkpoint = (
             f"qwen3-4b-reflect_{args.reflection_mode}_retry"
             f"-r{args.rank}-seed{args.seed}"
