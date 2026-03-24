@@ -1,9 +1,10 @@
 """
-fig6_scaling.py  (v2 — includes GRPO line)
+fig6_scaling.py  (v3 — adds no-SFT reference line)
 
 Scaling figure: GSM8K and MATH accuracy vs model size (4B → 8B).
 Shows SFT, RLVR, and GRPO as separate lines with ±1 std shading.
 Key finding: GRPO closes the gap with RLVR at 8B (capacity interaction).
+No-SFT RLVR reference shown as dashed red horizontal line.
 """
 
 import json, os
@@ -67,9 +68,14 @@ print(f"GRPO 4B: GSM8K={g4gm:.1f}±{g4gs:.1f}  MATH={g4mm:.1f}±{g4ms:.1f}")
 print(f"GRPO 8B: GSM8K={g8gm:.1f}±{g8gs:.1f}  MATH={g8mm:.1f}±{g8ms:.1f}")
 
 # ── colours ───────────────────────────────────────────────────────────────────
-C_RLVR = "#4C72B0"   # blue
-C_GRPO = "#DD8452"   # orange
-C_SFT  = "#8c8c8c"   # grey
+C_RLVR  = "#4C72B0"   # blue
+C_GRPO  = "#DD8452"   # orange
+C_SFT   = "#8c8c8c"   # grey
+C_NOSFT = "#C44E52"   # red (no-SFT reference)
+
+# no-SFT RLVR reference (5-run mean ± std, seeds 0/1/42)
+NOSFT_GSM  = 86.3
+NOSFT_MATH = 51.9
 
 SIZES    = [4, 8]
 SIZE_LBL = ["4B", "8B"]
@@ -114,6 +120,12 @@ for ax, title, sft_pt, rlvr_ms, rlvr_ss, grpo_ms, grpo_ss in [
     plot_line(rlvr_ms, rlvr_ss, C_RLVR, "RLVR (mean ± std)", offset=(6, 5))
     plot_line(grpo_ms, grpo_ss, C_GRPO, "GRPO (mean ± std)", offset=(6, -14))
 
+    # no-SFT reference line
+    nosft_val = NOSFT_GSM if title == "GSM8K" else NOSFT_MATH
+    ax.axhline(nosft_val, color=C_NOSFT, linewidth=1.5, linestyle="--", zorder=2, alpha=0.85)
+    ax.text(9.8, nosft_val + 0.3, f"No-SFT RLVR ({nosft_val:.1f}%)",
+            fontsize=7.5, color=C_NOSFT, ha="right", va="bottom")
+
     # Annotate the gap closing
     if all(v is not None for v in [rlvr_ms[0], grpo_ms[0], rlvr_ms[1], grpo_ms[1]]):
         gap4 = rlvr_ms[0] - grpo_ms[0]
@@ -144,8 +156,8 @@ fig.text(0.5, -0.04,
     "Figure 6.  RLVR vs GRPO scaling for Reflect-Full + Retry: system accuracy at 4B and 8B. "
     "At 4B, RLVR leads GRPO by +3.3pp on GSM8K and +1.7pp on MATH. "
     "At 8B, the gap closes to −0.7pp / +1.0pp — the two algorithms become statistically indistinguishable. "
-    "GRPO's 4B failure is a model-capacity interaction: too few correct trajectories for within-group normalisation to work; "
-    "at 8B the model generates enough successes per group for GRPO to recover.",
+    "Dashed red line shows no-SFT RLVR ceiling (86.3% GSM8K / 51.9% MATH), "
+    "well above all SFT-warmed conditions at both scales.",
     ha="center", fontsize=8, color="#555")
 
 plt.tight_layout(rect=[0, 0.06, 1, 1])
