@@ -1,0 +1,238 @@
+{
+  "Retry Only (RLVR)": {
+    "per_seed": {
+      "GSM8K": {
+        "seed0": {
+          "n": 200,
+          "first_correct": 67,
+          "first_acc": 33.5,
+          "system_correct": 72,
+          "system_acc": 36.0,
+          "wrong": 133,
+          "recovered": 5,
+          "recovery_rate": 3.7593984962406015
+        },
+        "seed1": {
+          "n": 200,
+          "first_correct": 65,
+          "first_acc": 32.5,
+          "system_correct": 67,
+          "system_acc": 33.5,
+          "wrong": 135,
+          "recovered": 2,
+          "recovery_rate": 1.4814814814814816
+        },
+        "seed42": {
+          "n": 200,
+          "first_correct": 68,
+          "first_acc": 34.0,
+          "system_correct": 68,
+          "system_acc": 34.0,
+          "wrong": 132,
+          "recovered": 0,
+          "recovery_rate": 0.0
+        }
+      },
+      "MATH": {
+        "seed0": {
+          "n": 200,
+          "first_correct": 33,
+          "first_acc": 16.5,
+          "system_correct": 35,
+          "system_acc": 17.5,
+          "wrong": 167,
+          "recovered": 2,
+          "recovery_rate": 1.1976047904191618
+        },
+        "seed1": {
+          "n": 200,
+          "first_correct": 31,
+          "first_acc": 15.5,
+          "system_correct": 34,
+          "system_acc": 17.0,
+          "wrong": 169,
+          "recovered": 3,
+          "recovery_rate": 1.7751479289940828
+        },
+        "seed42": {
+          "n": 200,
+          "first_correct": 46,
+          "first_acc": 23.0,
+          "system_correct": 46,
+          "system_acc": 23.0,
+          "wrong": 154,
+          "recovered": 0,
+          "recovery_rate": 0.0
+        }
+      }
+    },
+    "aggregate": {
+      "GSM8K": {
+        "first_acc_mean": 33.333333333333336,
+        "first_acc_std": 0.7637626158259734,
+        "system_acc_mean": 34.5,
+        "system_acc_std": 1.3228756555322954,
+        "recovery_rate_mean": 1.7469599925740278,
+        "recovery_rate_std": 1.8937075786068345,
+        "recovered_mean": 2.3333333333333335,
+        "recovered_std": 2.516611478423583,
+        "wrong_mean": 133.33333333333334,
+        "wrong_std": 1.5275252316519468
+      },
+      "MATH": {
+        "first_acc_mean": 18.333333333333332,
+        "first_acc_std": 4.0722639076235385,
+        "system_acc_mean": 19.166666666666668,
+        "system_acc_std": 3.3291640592396967,
+        "recovery_rate_mean": 0.9909175731377482,
+        "recovery_rate_std": 0.9054431217882468,
+        "recovered_mean": 1.6666666666666667,
+        "recovered_std": 1.5275252316519468,
+        "wrong_mean": 163.33333333333334,
+        "wrong_std": 8.144527815247077
+      }
+    }
+  },
+  "Grounded Reflection (RLVR)": {
+    "per_seed": {
+      "GSM8K": {
+        "seed0": {
+          "n": 200,
+          "first_correct": 67,
+          "first_acc": 33.5,
+          "system_correct": 78,
+          "system_acc": 39.0,
+          "wrong": 133,
+          "recovered": 11,
+          "recovery_rate": 8.270676691729323
+        },
+        "seed1": {
+          "n": 200,
+          "first_correct": 65,
+          "first_acc": 32.5,
+          "system_correct": 78,
+          "system_acc": 39.0,
+          "wrong": 135,
+          "recovered": 13,
+          "recovery_rate": 9.62962962962963
+        },
+        "seed42": {
+          "n": 200,
+          "first_correct": 65,
+          "first_acc": 32.5,
+          "system_correct": 80,
+          "system_acc": 40.0,
+          "wrong": 135,
+          "recovered": 15,
+          "recovery_rate": 11.11111111111111
+        }
+      },
+      "MATH": {
+        "seed0": {
+          "n": 200,
+          "first_correct": 34,
+          "first_acc": 17.0,
+          "system_correct": 40,
+          "system_acc": 20.0,
+          "wrong": 166,
+          "recovered": 6,
+          "recovery_rate": 3.614457831325301
+        },
+        "seed1": {
+          "n": 200,
+          "first_correct": 31,
+          "first_acc": 15.5,
+          "system_correct": 37,
+          "system_acc": 18.5,
+          "wrong": 169,
+          "recovered": 6,
+          "recovery_rate": 3.5502958579881656
+        },
+        "seed42": {
+          "n": 200,
+          "first_correct": 35,
+          "first_acc": 17.5,
+          "system_correct": 41,
+          "system_acc": 20.5,
+          "wrong": 165,
+          "recovered": 6,
+          "recovery_rate": 3.6363636363636362
+        }
+      }
+    },
+    "aggregate": {
+      "GSM8K": {
+        "first_acc_mean": 32.833333333333336,
+        "first_acc_std": 0.5773502691896257,
+        "system_acc_mean": 39.333333333333336,
+        "system_acc_std": 0.5773502691896257,
+        "recovery_rate_mean": 9.670472477490021,
+        "recovery_rate_std": 1.420657603495015,
+        "recovered_mean": 13,
+        "recovered_std": 2.0,
+        "wrong_mean": 134.33333333333334,
+        "wrong_std": 1.1547005383792515
+      },
+      "MATH": {
+        "first_acc_mean": 16.666666666666668,
+        "first_acc_std": 1.0408329997330663,
+        "system_acc_mean": 19.666666666666668,
+        "system_acc_std": 1.0408329997330663,
+        "recovery_rate_mean": 3.6003724418923677,
+        "recovery_rate_std": 0.044729344565176944,
+        "recovered_mean": 6,
+        "recovered_std": 0.0,
+        "wrong_mean": 166.66666666666666,
+        "wrong_std": 2.0816659994661326
+      }
+    }
+  },
+  "error_type_analysis": {
+    "by_error_type": {
+      "arithmetic": {
+        "n": 390,
+        "recovered": 38,
+        "recovery_rate": 9.743589743589745
+      },
+      "unit/conversion": {
+        "n": 11,
+        "recovered": 0,
+        "recovery_rate": 0.0
+      },
+      "other": {
+        "n": 1,
+        "recovered": 1,
+        "recovery_rate": 100.0
+      },
+      "logical/setup": {
+        "n": 1,
+        "recovered": 0,
+        "recovery_rate": 0.0
+      }
+    },
+    "by_concreteness": {
+      "concrete": {
+        "n": 296,
+        "recovered": 33,
+        "recovery_rate": 11.14864864864865
+      },
+      "vague": {
+        "n": 107,
+        "recovered": 6,
+        "recovery_rate": 5.607476635514018
+      }
+    },
+    "by_fix_complexity": {
+      "single_step": {
+        "n": 384,
+        "recovered": 36,
+        "recovery_rate": 9.375
+      },
+      "multi_step": {
+        "n": 19,
+        "recovered": 3,
+        "recovery_rate": 15.789473684210526
+      }
+    }
+  }
+}

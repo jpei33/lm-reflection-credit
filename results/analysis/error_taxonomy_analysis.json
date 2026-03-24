@@ -1,0 +1,152 @@
+{
+  "gsm8k": {
+    "aggregate_grounded": {
+      "arithmetic_slip": {
+        "wrong": 334,
+        "recovered": 37,
+        "rate": 11.077844311377245
+      },
+      "conceptual": {
+        "wrong": 10,
+        "recovered": 0,
+        "rate": 0.0
+      },
+      "setup_unit_error": {
+        "wrong": 13,
+        "recovered": 1,
+        "rate": 7.6923076923076925
+      }
+    },
+    "aggregate_retry": {
+      "arithmetic_slip": {
+        "wrong": 286,
+        "recovered": 3,
+        "rate": 1.048951048951049
+      },
+      "conceptual": {
+        "wrong": 9,
+        "recovered": 0,
+        "rate": 0.0
+      },
+      "setup_unit_error": {
+        "wrong": 11,
+        "recovered": 0,
+        "rate": 0.0
+      }
+    },
+    "correctable": {
+      "grounded_rate": 10.951008645533141,
+      "retry_rate": 1.0101010101010102,
+      "wrong": 347,
+      "recovered": 38
+    },
+    "incorrectable": {
+      "grounded_rate": 0.0,
+      "wrong": 10,
+      "recovered": 0
+    },
+    "per_seed_rates_grounded": {
+      "arithmetic_slip": [
+        11.008493129779952,
+        0.9192177255366599
+      ],
+      "conceptual": [
+        0.0,
+        0.0
+      ],
+      "setup_unit_error": [
+        5.5555555555555545,
+        7.85674201318386
+      ]
+    },
+    "per_seed_rates_retry": {
+      "arithmetic_slip": [
+        1.1303511303511302,
+        0.9757317352140833
+      ],
+      "conceptual": [
+        0.0,
+        0.0
+      ],
+      "setup_unit_error": [
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "math": {
+    "aggregate_grounded": {
+      "conceptual": {
+        "wrong": 107,
+        "recovered": 5,
+        "rate": 4.672897196261682
+      },
+      "setup_unit_error": {
+        "wrong": 8,
+        "recovered": 1,
+        "rate": 12.5
+      },
+      "arithmetic_slip": {
+        "wrong": 84,
+        "recovered": 5,
+        "rate": 5.952380952380952
+      }
+    },
+    "aggregate_retry": {
+      "conceptual": {
+        "wrong": 97,
+        "recovered": 2,
+        "rate": 2.0618556701030926
+      },
+      "setup_unit_error": {
+        "wrong": 7,
+        "recovered": 0,
+        "rate": 0.0
+      },
+      "arithmetic_slip": {
+        "wrong": 81,
+        "recovered": 0,
+        "rate": 0.0
+      }
+    },
+    "correctable": {
+      "grounded_rate": 6.521739130434782,
+      "retry_rate": 0.0,
+      "wrong": 92,
+      "recovered": 6
+    },
+    "incorrectable": {
+      "grounded_rate": 4.672897196261682,
+      "wrong": 107,
+      "recovered": 5
+    },
+    "per_seed_rates_grounded": {
+      "conceptual": [
+        4.586472328407813,
+        0.9687685377582964
+      ],
+      "setup_unit_error": [
+        16.666666666666668,
+        23.570226039551585
+      ],
+      "arithmetic_slip": [
+        6.114238065457577,
+        1.9723545292211626
+      ]
+    },
+    "per_seed_rates_retry": {
+      "conceptual": [
+        2.0120120120120117,
+        1.4458141882535402
+      ],
+      "setup_unit_error": [
+        0.0,
+        0.0
+      ],
+      "arithmetic_slip": [
+        0.0,
+        0.0
+      ]
+    }
+  }
+}
