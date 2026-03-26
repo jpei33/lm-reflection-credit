@@ -148,6 +148,11 @@ def parse_pred_final(sol_text: str) -> dict:
     """
     sol_text = sol_text or ""
 
+    # Strip Qwen3 <think>...</think> blocks (8B thinking mode) before answer extraction.
+    # Also strip unclosed <think> blocks in case the model never emitted </think>.
+    sol_text = re.sub(r"<think>.*?</think>", "", sol_text, flags=re.DOTALL).strip()
+    sol_text = re.sub(r"<think>.*$", "", sol_text, flags=re.DOTALL).strip()
+
     boxed = None
     if "\\boxed{" in sol_text:
         boxed = normalize_answer(extract_math_final(sol_text))
@@ -413,10 +418,34 @@ def build_reflection_prompt_plan(
     )
 
 
+_GROUNDED_FEW_SHOT_EXAMPLE = """\
+Here is a worked example of the format:
+
+Problem:
+A store sells pencils for $0.25 each. Jake buys 8 pencils. How much does he spend?
+
+Failed attempt:
+Cost per pencil: $0.25
+Number of pencils: 8
+Total cost: 8 × 0.25 = $1.80
+
+Model's (wrong) answer: $1.80
+
+WRONG LINE: "Total cost: 8 × 0.25 = $1.80"
+WHY WRONG: 8 × 0.25 equals 2.00, not 1.80; the multiplication was computed incorrectly.
+CORRECT VALUE: $2.00
+
+---
+Now do the same for the problem below.
+
+"""
+
+
 def build_reflection_prompt_grounded(
     question: str,
     solution: str,
     pred_final: Optional[str],
+    few_shot: bool = False,
 ) -> str:
     """
     Grounded reflection prompt: forces the model to quote the exact wrong line
@@ -426,10 +455,14 @@ def build_reflection_prompt_grounded(
     - Includes the full failed solution (not omitted)
     - Removes the "no digits" constraint — specific values are required
     - Uses a forced-quote format that can't be answered generically
+
+    few_shot=True prepends a worked example demonstrating the desired output format.
     """
     pf = _fmt_pred_final(pred_final)
+    few_shot_prefix = _GROUNDED_FEW_SHOT_EXAMPLE if few_shot else ""
     return (
-        "You are reviewing a failed math solution.\n"
+        few_shot_prefix
+        + "You are reviewing a failed math solution.\n"
         "The model's answer was wrong. Find the FIRST calculation mistake.\n\n"
         f"Problem:\n{question}\n\n"
         f"Failed attempt:\n{solution}\n\n"
@@ -492,7 +525,7 @@ def build_reflection_prompt(
     if mode == "tail":
         return build_reflection_prompt_tail(question, solution, pred_final, few_shot=few_shot)
     if mode == "grounded":
-        return build_reflection_prompt_grounded(question, solution, pred_final)
+        return build_reflection_prompt_grounded(question, solution, pred_final, few_shot=few_shot)
     return build_reflection_prompt_full(question, solution, pred_final, few_shot=few_shot)
 
 

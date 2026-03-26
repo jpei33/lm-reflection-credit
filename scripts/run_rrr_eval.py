@@ -38,7 +38,7 @@ def main():
     ap.add_argument("--reflect_temperature", type=float, default=0.3)
     ap.add_argument("--reflect_top_p", type=float, default=0.9)
     ap.add_argument("--retry_temperature", type=float, default=None)
-    ap.add_argument("--reflection_mode", choices=["full", "tail", "plan"], default="full")
+    ap.add_argument("--reflection_mode", choices=["full", "tail", "plan", "grounded"], default="full")
 
     args = ap.parse_args()
 

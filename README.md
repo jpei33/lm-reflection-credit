@@ -1548,3 +1548,60 @@ This result answers the key open question left by Phase 17b. It is now confirmed
 3. The bottleneck is the SFT format itself (bare answer `#### N` targets, structured reflection template), not the quality of the training data or the starting weights.
 
 The paper's conclusion is now fully closed: **no-SFT RLVR is the ceiling; grounded reflection is the best method within the SFT-warm-start paradigm; the paradigm itself is the bottleneck.** Future work should explore reflection formats that preserve native CoT (e.g., full chain-of-thought retry targets rather than terse bare answers) or mechanisms that inject reflection without a destructive SFT stage.
+
+---
+
+## Phase 24: RLVR→RLVR Grounded Reflection (Option 2 — No SFT at Any Stage)
+
+**Research question:** Can a second RLVR pass teach grounded reflection behavior on top of the strong no-SFT model, without any destructive SFT stage? If so, does system accuracy exceed the 86.3% no-SFT ceiling by adding genuine reflection-driven recovery?
+
+**Motivation:** Phase 23 confirmed SFT format harm is structural — even warm-starting from an 84.5% model, grounded SFT crashes it to 40.5%. The alternative is to skip SFT entirely and use RLVR twice: Stage 1 builds first-attempt accuracy from the base model; Stage 2 trains the model to generate useful grounded reflections (WRONG_LINE / WHY_WRONG / CORRECT_VALUE) purely through RL reward pressure, with the format injected via prompt rather than supervised imitation.
+
+**Key difference from all previous setups:** No SFT at any stage. The reflection format is never used as a supervised training target — it is only ever a prompt template injected during RLVR rollouts. The model can produce full chain-of-thought on both the reflection and retry steps; nothing collapses output length.
+
+### Phase 24a — Re-eval no-SFT model with grounded eval format
+
+**Setup:** Re-evaluate `rrr-grounded-r8-seed42-v4` (Stage 1 no-SFT RLVR, 86.3% GSM8K) using the grounded reflection eval format (WRONG_LINE prompt injected) instead of the generic `reflect_full_retry` format used in Phase 17b.
+
+| Metric | GSM8K (grounded eval) | GSM8K (full_retry eval, Phase 17b) | MATH (grounded eval) | MATH (full_retry eval, Phase 17b) |
+|---|---|---|---|---|
+| First-attempt acc | 79.5% | 81.0% | 53.0% | 53.5% |
+| System accuracy | 83.5% | 85.0% | 53.0% | 54.0% |
+| Recovery rate | **19.5%** (8/41) | 21.1% (8/38) | **0.0%** (0/94) | 1.1% (1/93) |
+
+**Finding:** The no-SFT model already generates real, well-structured grounded reflections without any SFT training on the format. GSM8K recovery (19.5%) is **2× higher than the SFT-warmed grounded condition** (9.7%) — the stronger base model uses the reflection format more effectively. MATH recovery is flat at 0% regardless of eval format, consistent with the error taxonomy finding that MATH errors are structurally incorrectable via targeted arithmetic re-execution.
+
+### Phase 24b — Stage 2 RLVR with mixed data (negative result)
+
+**Setup:** Second RLVR pass from `rrr-grounded-r8-seed42-v4`, `reflection_mode=grounded`, 500 steps on mixed GSM8K+MATH training data.
+
+| Metric | GSM8K Stage 1 (24a) | GSM8K Stage 2 (24b) | MATH Stage 1 (24a) | MATH Stage 2 (24b) |
+|---|---|---|---|---|
+| First-attempt | 79.5% | 79.0% | 53.0% | **46.0%** |
+| System accuracy | 83.5% | 83.0% | 53.0% | **47.5%** |
+| Recovery rate | 19.5% (8/41) | 19.0% (8/42) | 0.0% | 2.8% (3/108) |
+
+**Finding:** Stage 2 RLVR on mixed data **does not help and hurts MATH**. GSM8K is flat within noise. MATH first-attempt accuracy drops 7pp (53% → 46%), with only a negligible recovery gain (0% → 2.8%). The training log revealed the root cause: the majority of training steps showed `no datums this step` — MATH competition problems produce near-0% retry success rate, flooding batches with zero-reward rollouts. The noisy gradient updates from zero-reward MATH steps degrade the model's native MATH first-attempt capability.
+
+**Training signal diagnosis:** With `problems_per_step=4` on mixed data, expected successful recoveries per step ≈ 0.16 (GSM8K) + 0.00 (MATH) = 0.16. Effectively no usable gradient signal for most steps.
+
+### Phase 24c — Few-shot reflection prompt (negative result)
+
+**Setup:** Zero-cost eval change — prepend a worked WRONG_LINE/WHY_WRONG/CORRECT_VALUE example to every reflection prompt for `rrr-grounded-r8-seed42-v4`. Tests whether format demonstration unlocks additional recovery without any training.
+
+| Metric | GSM8K zero-shot | GSM8K few-shot | MATH zero-shot | MATH few-shot |
+|---|---|---|---|---|
+| System accuracy | 83.5% | 83.0% | 53.0% | 53.5% |
+| Recovery rate | 19.5% | 19.0% | 0.0% | 3.1% (3/96) |
+
+**Finding:** No effect. The model already follows the WRONG_LINE format well without a demonstration. The bottleneck is not format compliance — the model genuinely cannot fix the errors it gets wrong, regardless of how clearly the reflection structure is prompted.
+
+### Phase 24d — Stage 2 RLVR on GSM8K-only data (in progress)
+
+**Setup:** Second RLVR pass from `rrr-grounded-r8-seed42-v4`, `reflection_mode=grounded`, 500 steps on **GSM8K training data only**, `problems_per_step=8` to increase gradient signal density.
+
+**Motivation:** GSM8K-only training eliminates zero-reward MATH examples from the batch. With 79.5% first-attempt accuracy and 19.5% recovery rate, GSM8K produces ~0.39 expected successful recoveries per step at `problems_per_step=8` — roughly one useful gradient update every 2–3 steps vs every 6 steps with `problems_per_step=4`. MATH is excluded from training entirely to prevent the first-attempt degradation seen in Phase 24b.
+
+**Hypothesis:** Focused GSM8K gradient signal allows the model to learn to improve grounded reflection quality, pushing GSM8K recovery above 19.5% and system accuracy above 83.5%. MATH performance is preserved rather than degraded since MATH problems are excluded from the training distribution.
+
+Results pending.

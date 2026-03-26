@@ -77,6 +77,11 @@ _MODE_TO_EVAL_KWARGS = {
         "retry_only": False,
         "reflection_mode": "plan",
     },
+    "reflect_grounded_retry": {
+        "no_reflect": False,
+        "retry_only": False,
+        "reflection_mode": "grounded",
+    },
 }
 
 # ---------------------------------------------------------------------------
