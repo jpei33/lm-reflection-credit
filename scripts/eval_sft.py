@@ -214,6 +214,11 @@ def parse_args() -> argparse.Namespace:
                     help="Prepend few-shot examples to each reflection prompt.  "
                          "Automatically appends '_fewshot' to the output filename "
                          "so zero-shot and few-shot results are never mixed.")
+    ap.add_argument("--output_suffix", type=str, default="",
+                    help="Optional suffix appended to the output filename before "
+                         "the dataset name (e.g. '_8192tok').  Lets you keep "
+                         "results from different token budgets side-by-side without "
+                         "overwriting existing files.")
     ap.add_argument("--resume", action="store_true",
                     help="Resume interrupted eval (skip already-written examples).")
     ap.add_argument("--checkpoint_every", type=int, default=10)
@@ -349,7 +354,7 @@ def main() -> None:
         # results are always written to separate files.
         mode_suffix = "" if args.mode == "baseline_solve" else f"_{args.mode}"
         fewshot_suffix = "_fewshot" if args.few_shot else ""
-        output_path = output_dir / f"{args.run_name}{mode_suffix}{fewshot_suffix}_{ds_name}.jsonl"
+        output_path = output_dir / f"{args.run_name}{mode_suffix}{fewshot_suffix}{args.output_suffix}_{ds_name}.jsonl"
         print(f"\n[eval] dataset={ds_name}  input={input_path}  output={output_path}")
 
         run_rrr_eval(
