@@ -63,6 +63,50 @@ Evaluated with 4096-token budget (GSM8K) and 8192-token budget (MATH) to accommo
 
 ---
 
+## Figures
+
+### Elicitation vs Exploration: avg@k vs pass@k
+
+The key diagnostic for whether RLVR trains *capability* or merely *elicitation*. **pass@k** (solid lines) is the oracle best-of-k upper bound. **avg@k** (dashed lines) is the mean accuracy of individual samples — a proxy for how much probability mass the model places on correct answers.
+
+<p align="center">
+  <img src="figures/fig7_exploration.png" width="95%" />
+</p>
+
+**Reading the plot:** The shaded region between pass@k and avg@k is the *exploration gap* — how much the model benefits from being sampled multiple times. The Grounded RLVR model (blue) starts at high avg@k (~55% GSM8K) and has a narrow gap, meaning individual samples are already reliable. The SFT Baseline (red) has a wide gap — high exploration potential but low average quality. Crucially, the trained model at N=1 beats the baseline at N=16 on GSM8K, ruling out compute arbitrage as an explanation for the gains.
+
+---
+
+### Error Recovery Rate by Condition
+
+<p align="center">
+  <img src="figures/fig8_recovery.png" width="75%" />
+</p>
+
+Grounded Reflection recovers 5.7× more GSM8K errors than Retry Only (9.7% vs 1.7%) and 3.6× more MATH errors. First-attempt accuracy is nearly identical across all three conditions (~33% GSM8K) — the gain is entirely in the reflection quality.
+
+---
+
+### RLVR Lift over SFT by Condition (3 seeds, mean ± std)
+
+<p align="center">
+  <img src="figures/fig1_rlvr_delta.png" width="95%" />
+</p>
+
+Grounded Reflection is the only condition with consistent positive RLVR lift on both benchmarks. The dashed red line marks the No-SFT RLVR ceiling — the 86.3% GSM8K / 51.9% MATH target that all SFT-warmed conditions fall well short of.
+
+---
+
+### Scaling: 4B vs 8B (RLVR vs GRPO)
+
+<p align="center">
+  <img src="figures/fig6_scaling.png" width="95%" />
+</p>
+
+GRPO underperforms RLVR by 3.3pp at 4B but matches it at 8B — a capacity × algorithm interaction. Both algorithms improve with scale; the dashed red line again shows the No-SFT RLVR ceiling far above all SFT-warmed conditions at both scales.
+
+---
+
 ## Setup
 
 ```bash
