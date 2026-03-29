@@ -65,6 +65,28 @@ Evaluated with 4096-token budget (GSM8K) and 8192-token budget (MATH) to accommo
 
 ## Figures
 
+### The SFT Harm Cascade
+
+The single most important visualization: standard SFT warm-starts on terse answer formats destroy ~53pp of base-model accuracy before RLVR training even begins. Removing the SFT stage entirely restores performance to the base instruct ceiling in a single step.
+
+<p align="center">
+  <img src="figures/fig9_sft_harm_cascade.png" width="95%" />
+</p>
+
+---
+
+### Context vs Frontier Models (GSM8K)
+
+Our No-SFT RLVR result (86.3% 4B, 87.0% 8B) sits within ~1pp of the published Qwen3 instruct base — meaning RLVR successfully *elicits* existing capability without adding new knowledge. Frontier models (GPT-4o, Claude 3.5, Gemini) achieve 91–96% on the full GSM8K test set; our models are trained for ~500 steps on ~7K problems with LoRA rank 8.
+
+<p align="center">
+  <img src="figures/fig11_frontier_context.png" width="95%" />
+</p>
+
+> ⚠ Frontier numbers are from published benchmarks (full 1319-example test set, single-pass CoT). Our numbers are from a 200-example held-out subset with system accuracy (first attempt OR retry). Not directly comparable, but the relative ordering within our conditions is fully controlled.
+
+---
+
 ### Elicitation vs Exploration: avg@k vs pass@k
 
 The key diagnostic for whether RLVR trains *capability* or merely *elicitation*. **pass@k** (solid lines) is the oracle best-of-k upper bound. **avg@k** (dashed lines) is the mean accuracy of individual samples — a proxy for how much probability mass the model places on correct answers.
@@ -84,6 +106,16 @@ The key diagnostic for whether RLVR trains *capability* or merely *elicitation*.
 </p>
 
 Grounded Reflection recovers 5.7× more GSM8K errors than Retry Only (9.7% vs 1.7%) and 3.6× more MATH errors. First-attempt accuracy is nearly identical across all three conditions (~33% GSM8K) — the gain is entirely in the reflection quality.
+
+---
+
+### Error Taxonomy: What Does Grounded Reflection Actually Fix?
+
+<p align="center">
+  <img src="figures/fig10_error_taxonomy.png" width="92%" />
+</p>
+
+83% of wrong-first-attempt errors are arithmetic in nature, and these are also the most recoverable (11.1% fixed by retry). Logical/setup errors are essentially unrecoverable (0.0%) — the reflection mechanism localizes arithmetic mistakes but cannot rediagnose the problem from scratch.
 
 ---
 
