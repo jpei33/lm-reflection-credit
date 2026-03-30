@@ -61,6 +61,8 @@ Evaluated with 4096-token budget (GSM8K) and 8192-token budget (MATH) to accommo
 
 **5. Reflection template collapse.** With SFT warm-start, 100% of generated reflections are identical generic strings regardless of problem content. The model learned to emit a fixed template, not to read and diagnose its own errors. Grounded SFT forces problem-specificity via verbatim wrong-line citation.
 
+**6. RLVR is elicitation, not exploration.** avg@k (mean per-sample accuracy) is flat across all k for both trained and untrained models — additional samples don't improve quality. Both models have highly correlated errors: actual pass@k reaches only 49–72% of the theoretical i.i.d. ceiling, meaning failures repeat across samples rather than being independently random. RLVR's benefit is purely in per-sample accuracy (p: 23.5% → 33.5%) and in moving problems out of a hard "always-wrong" failure regime (56.5% → 30.5% of problems always wrong at k=8). It does not create diverse solution paths; it unlocks latent correct paths the model already knew.
+
 ---
 
 ## Figures
@@ -87,15 +89,33 @@ Our No-SFT RLVR result (86.3% 4B, 87.0% 8B) sits within ~1pp of the published Qw
 
 ---
 
-### Elicitation vs Exploration: avg@k vs pass@k
+### Elicitation vs Exploration: Deep Dive
 
-The key diagnostic for whether RLVR trains *capability* or merely *elicitation*. **pass@k** (solid lines) is the oracle best-of-k upper bound. **avg@k** (dashed lines) is the mean accuracy of individual samples — a proxy for how much probability mass the model places on correct answers.
+Does sampling more times help because the model *explores* new correct paths, or because it has a higher per-sample hit rate? This four-panel figure gives the precise answer.
+
+<p align="center">
+  <img src="figures/fig12_elicitation_deep.png" width="97%" />
+</p>
+
+**What the panels show:**
+
+**Top row — per-problem correctness distribution (k=8 samples each):** The baseline (right) is strongly bimodal: 56% of problems are "always wrong" regardless of how many times you sample, 10% are "always right." Only 33% of problems are in the mixed zone where sampling actually helps. RLVR (left) reshapes this: the "always wrong" hard-failure bucket shrinks from 56% → 30%, and 66% of problems move into the mixed zone where at least some samples are correct.
+
+**Bottom left — avg@k is flat for both models:** Per-sample accuracy does not increase with k. Additional samples don't make the model smarter; you're drawing from the same distribution each time. This rules out *exploration* — the model is not finding new solution paths with more samples.
+
+**Bottom right — actual vs i.i.d. pass@k:** If samples were independent (i.i.d.), pass@k would grow rapidly to near 100% for the trained model by k=8. Actual pass@k (solid lines) lags far behind the theoretical i.i.d. ceiling (dashed lines). Both models have **correlated errors** — when the model fails on a problem, it tends to fail the same way every time.
+
+**Conclusion — elicitation, not exploration:** RLVR does not increase output diversity. It increases per-sample accuracy p (from 23% → 33%) and unlocks the latent capability to sometimes solve problems that were previously always failed — but once a problem is in the "always wrong" bucket, no amount of sampling recovers it. This directly supports the Chen et al. 2025 elicitation framing: RLVR reshapes sampling toward already-latent correct paths rather than discovering new ones.
+
+---
+
+### avg@k vs pass@k (overview)
 
 <p align="center">
   <img src="figures/fig7_exploration.png" width="95%" />
 </p>
 
-**Reading the plot:** The shaded region between pass@k and avg@k is the *exploration gap* — how much the model benefits from being sampled multiple times. The Grounded RLVR model (blue) starts at high avg@k (~55% GSM8K) and has a narrow gap, meaning individual samples are already reliable. The SFT Baseline (red) has a wide gap — high exploration potential but low average quality. Crucially, the trained model at N=1 beats the baseline at N=16 on GSM8K, ruling out compute arbitrage as an explanation for the gains.
+The trained model at N=1 beats the untrained baseline at N=16 on GSM8K. The gain is from higher per-sample accuracy, not compute.
 
 ---
 
@@ -298,9 +318,7 @@ figures/                   # All paper figures
 
 ```bibtex
 @article{pei2025grounded,
-  title   = {Grounded Reflection for Math Self-Correction: When SFT Helps and Hurts},
+  title   = {Grounded Reflection for Math Self-Correction: When SFT Helps and Hurts (dummy example)},
   author  = {Pei, Justin},
   year    = {2025},
-  note    = {Preprint}
-}
-```
+  note    = {
