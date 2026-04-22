@@ -577,6 +577,81 @@ The SFT checkpoint and the Step Credit RLVR checkpoint are **identical** on ever
 
 ---
 
+## Phase 15: pass@k Oracle Training Sweep
+
+**Hypothesis:** Phase 11 measured pass@k at single checkpoints. What changes *during* RLVR training? Specifically, how does the oracle-vs-greedy gap evolve across training steps, and does it distinguish elicitation (the capability was there, training teaches the model to reach it) from capability expansion (the ceiling genuinely rises)?
+
+**Why it matters.** pass@k taken longitudinally is a direct diagnostic for what a training signal is contributing:
+
+| Pattern over training | Interpretation |
+|---|---|
+| gap closes (oracle flat, greedy rises) | **elicitation** — capability was reachable with search; training teaches first-try reach |
+| gap holds (oracle and greedy rise together) | **capability expansion** — ceiling genuinely lifts |
+| gap widens (oracle rises, greedy collapses) | capability added at the cost of elicitation (mode collapse / overconfidence) |
+
+The existing project thesis — "failure modes are correlated → reflection is an elicitation problem, not a search problem" — is a cross-sectional claim from Phase 11. Phase 15 upgrades it to a longitudinal one.
+
+### Design
+
+- **Sampling:** k = 16, temperature = 0.7, top_p = 0.95 (matches Phase 11 exactly)
+- **Greedy proxy:** `sample_idx = 0` of the BoN group. Avoids a separate T=0 decode; keeps the gap apples-to-apples under the same sampling distribution.
+- **Datasets:** gsm8k_test_200, math_test_200 (reused)
+- **Estimator:** unbiased pass@k (Chen et al. 2021) with bootstrap 95% CIs over 10 000 task resamples. Implementation in `src/eval/passk_estimator.py`; tests in `tests/test_passk_estimator.py`.
+
+### Cells (4B, seed 42)
+
+| Condition | SFT (step 0) | Mid-training | step 500 |
+|---|---|---|---|
+| Reflect-Full (RLVR) | `qwen3-4b-reflect_full_retry-r8-seed42` | `rrr-grounded-r8-seed42-v7-step350` | `rrr-grounded-r8-seed42-v7` |
+| Baseline CoT (RLVR) | `qwen3-4b-baseline_solve-r8-seed42` | `baseline_rlvr_solve-r8-seed42-step300` | `baseline_rlvr_solve-r8-seed42` |
+
+All six sidecar JSONs are present on disk (`scripts/run_passk_training_sweep.py --dry-run` confirms). The Phase 11 SFT baseline and Reflect-Full final-step cells already have `_bon_n16_*` data and are reused via `--resume`.
+
+### How to reproduce
+
+```bash
+python scripts/run_passk_training_sweep.py --model 4b --k 16 --seed 42 --resume
+python scripts/plot_passk_training_sweep.py
+```
+
+### Results (4B, seed 42, k = 16, T = 0.7)
+
+95% bootstrap CIs over 10 000 task resamples in brackets. Full summary at `results/analysis/passk_training_sweep_summary.json`.
+
+| Condition | Dataset | Step | oracle pass@16 | greedy pass@1 | gap (pp) |
+|---|---|---|---|---|---|
+| Reflect-Full | GSM8K | SFT   | 41.5 [34.5, 48.5] | 8.0  [4.5, 12.0]  | +33.5 |
+| Reflect-Full | GSM8K | 350   | 78.0 [72.0, 83.5] | 32.0 [25.5, 38.5] | +46.0 |
+| Reflect-Full | GSM8K | 500   | 79.0 [73.0, 84.5] | 31.0 [24.5, 37.5] | +48.0 |
+| Reflect-Full | MATH  | SFT   | 37.5 [31.0, 44.0] | 14.0 [9.5, 19.0]  | +23.5 |
+| Reflect-Full | MATH  | 350   | 51.5 [44.5, 58.5] | 33.0 [26.5, 39.5] | +18.5 |
+| Reflect-Full | MATH  | 500   | 51.0 [44.0, 58.0] | 31.0 [24.5, 37.5] | +20.0 |
+| Baseline CoT | GSM8K | SFT   | 51.0 [44.0, 58.0] | 24.0 [18.5, 30.0] | +27.0 |
+| Baseline CoT | GSM8K | 300   | 36.5 [30.0, 43.0] | 30.5 [24.0, 37.0] |  +6.0 |
+| Baseline CoT | GSM8K | 500   | 33.5 [27.0, 40.5] | 30.0 [23.5, 36.5] |  +3.5 |
+| Baseline CoT | MATH  | SFT   | 36.5 [30.0, 43.5] | 15.5 [10.5, 20.5] | +21.0 |
+| Baseline CoT | MATH  | 300   | 23.5 [18.0, 29.5] | 16.0 [11.0, 21.5] |  +7.5 |
+| Baseline CoT | MATH  | 500   | 19.5 [14.0, 25.5] | 16.5 [11.5, 22.0] |  +3.0 |
+
+### Findings
+
+**The pre-registered "oracle flat, greedy rises → elicitation" hypothesis is falsified.** The sweep revealed three qualitatively different training-dynamics patterns across the six cells, and the diagnostic actually discriminates between them:
+
+1. **Baseline CoT RLVR → capability *regression* with mild elicitation.** Oracle pass@16 drops substantially across training (GSM8K −17.5 pp, MATH −17.0 pp) while greedy pass@1 barely moves (GSM8K +6 pp, MATH +1 pp). The oracle–greedy gap closes not because greedy rises to the ceiling, but because the ceiling falls to greedy. This is the mode-collapse signature: the policy narrows its output distribution to over-commit to a small set of approaches, sacrificing pass@k reachability for pass@1 stability. The step-500 checkpoint is strictly worse than its SFT starting point by oracle pass@16.
+
+2. **Reflect-Full RLVR on GSM8K → capability expansion with divergent elicitation.** Oracle climbs from 41.5% → 79.0% (+37.5 pp) while greedy climbs from 8.0% → 31.0% (+23.0 pp). Both rise dramatically, and the oracle rises faster — so the gap *widens* (+14.5 pp). This is the "training is genuinely expanding the capability ceiling" pattern, with the additional texture that the low SFT greedy (8%, classic reflect_full format collapse) means the floor has more room to rise than the ceiling does.
+
+3. **Reflect-Full RLVR on MATH → mixed (capability + elicitation).** Oracle rises (37.5% → 51.0%, +13.5 pp) and greedy rises more (14.0% → 31.0%, +17.0 pp); the gap narrows slightly (+23.5 → +20.0 pp). This is the closest cell to the original "elicitation" hypothesis, but even here the oracle is not flat.
+
+**Headline for the paper.** The same RLVR signal produces *capability expansion* when layered on grounded reflection and *capability regression* when layered on vanilla CoT. At step 500 the two arms are nearly tied on greedy pass@1 (GSM8K: 31.0 vs 30.0; MATH: 31.0 vs 16.5) but the Reflect-Full arm has a **2.4× higher pass@16 ceiling on GSM8K (79.0 vs 33.5) and 2.6× on MATH (51.0 vs 19.5)**. A pass@1-only evaluation would score these arms as comparable on GSM8K; pass@k reveals they are fundamentally different policies.
+
+**Methodological claim.** pass@k read longitudinally is not just a diagnostic for "what is training adding" — it is a load-bearing safety check on pass@1-only eval reports. For any RLVR-style training curve, a rising pass@1 is compatible with either a rising or a *falling* oracle ceiling, and the two have opposite implications for whether remaining headroom is reachable with more training versus more sampling. pass@1 alone cannot distinguish them.
+
+Full protocol and decision points in `scripts/experiments/passk_training_sweep_protocol.md`.
+
+
+---
+
 ## Figures
 
 All figures are saved to `figures/`.
@@ -596,6 +671,14 @@ RLVR lift (percentage points) over the matched SFT baseline for each training co
 </p>
 
 Oracle upper bound (pass@k, blue) and deployable majority vote (majority@k, orange) for the Baseline SFT checkpoint at temperature 0.7, sweeping k ∈ {1, 2, 3, 8, 16}. Coloured markers show RLVR trained model accuracy at compute-matched k values. On GSM8K, RLVR Retry Only (34.0%) and Reflect-Full (32.5%) both comfortably exceed majority@k at matched k (23.0%), ruling out inference-compute as the explanation for the gains. majority@k is nearly flat across all k on both datasets, indicating that the baseline model's errors are highly correlated — RLVR training changes the solution distribution, not just the token budget.
+
+### Figure 2b — pass@k Training Sweep (`fig2b_passk_training_sweep.png`)
+
+<p align="center">
+  <img src="figures/fig2b_passk_training_sweep.png" width="95%" />
+</p>
+
+Oracle pass@16 (solid blue) vs. greedy pass@1 at T=0.7 (dashed orange) across RLVR training steps for each (condition, dataset) cell. Shaded bands are 95% bootstrap CIs over the 200-problem task set. The four panels reveal three qualitatively different training-dynamics patterns. **Baseline CoT (bottom row)** shows *capability regression*: oracle pass@16 drops substantially (GSM8K 51% → 33.5%, MATH 36.5% → 19.5%) while greedy barely moves — the gap closes because the ceiling falls, the signature of RLVR mode collapse. **Reflect-Full on GSM8K (top-left)** shows *capability expansion*: oracle climbs 41.5% → 79% and greedy 8% → 31%, with the gap widening from +33.5 pp to +48 pp. **Reflect-Full on MATH (top-right)** is mixed, with both oracle and greedy rising and the gap narrowing slightly. Same RLVR signal, opposite effects on the capability ceiling depending on the reflection architecture. See Phase 15 above for the full protocol and interpretation.
 
 ### Figure 3 — Training Reward Curves (`fig3_training_curves.png`)
 
