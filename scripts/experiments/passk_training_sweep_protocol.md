@@ -1,6 +1,8 @@
 # Phase 15 — pass@k Oracle Training Sweep (Day 22 protocol)
 
-**Status:** protocol specified, sampling pending a GPU/Tinker run.
+**Status:** sampling complete on 4B seed 42; results in `EXPERIMENTS.md` Phase 15 and `figures/fig2b_passk_training_sweep.png`.
+
+> **Naming.** "RRR-Grounded" here is the `rrr-grounded-r8-seed42-v7` RLVR training run — grounded reflection with specific error citations, started from the `reflect_full_retry` SFT base. The project's older shorthand "Reflect-Full + Retry" refers to the same run from an inference-format-category perspective.
 **Driver:**   `scripts/run_passk_training_sweep.py`
 **Plotter:**  `scripts/plot_passk_training_sweep.py`
 **Estimator:** `src/eval/passk_estimator.py` (tested in `tests/test_passk_estimator.py`)
@@ -38,9 +40,9 @@ This is the experiment Day 22 of the OpenAI Frontier Evals prep study plan calls
 
 | Condition | Step label | Checkpoint | Exists on disk |
 |---|---|---|---|
-| Reflect-Full (RLVR) | SFT (step 0) | `qwen3-4b-reflect_full_retry-r8-seed42` | ✓ |
-| Reflect-Full (RLVR) | step 350 | `rrr-grounded-r8-seed42-v7-step350` | ✓ |
-| Reflect-Full (RLVR) | step 500 | `rrr-grounded-r8-seed42-v7` | ✓ |
+| RRR-Grounded (RLVR) | SFT (step 0) | `qwen3-4b-reflect_full_retry-r8-seed42` | ✓ |
+| RRR-Grounded (RLVR) | step 350 | `rrr-grounded-r8-seed42-v7-step350` | ✓ |
+| RRR-Grounded (RLVR) | step 500 | `rrr-grounded-r8-seed42-v7` | ✓ |
 | Baseline CoT (RLVR) | SFT (step 0) | `qwen3-4b-baseline_solve-r8-seed42` | ✓ |
 | Baseline CoT (RLVR) | step 300 | `baseline_rlvr_solve-r8-seed42-step300` | ✓ |
 | Baseline CoT (RLVR) | step 500 | `baseline_rlvr_solve-r8-seed42` | ✓ |
@@ -60,7 +62,7 @@ Formulas and the log-space implementation live in `src/eval/passk_estimator.py`.
 
 ### 2.4 Compute budget
 
-One cell ≈ 200 problems × 16 samples × 512 max tokens. With Tinker's parallel `sample()` fan-out this is the same cost per cell that Phase 11 already paid at N=16. Six cells × 2 datasets = 12 BoN files total. Half (N=16 on seed42 for Baseline SFT and Reflect-Full final) is already on disk from Phase 11; the sweep script will **resume** into those files so no work is duplicated.
+One cell ≈ 200 problems × 16 samples × 512 max tokens. With Tinker's parallel `sample()` fan-out this is the same cost per cell that Phase 11 already paid at N=16. Six cells × 2 datasets = 12 BoN files total. Half (N=16 on seed42 for Baseline SFT and RRR-Grounded final) is already on disk from Phase 11; the sweep script will **resume** into those files so no work is duplicated.
 
 **Incremental work for Phase 15** = 10 cells × 200 problems × 16 samples ≈ 32 k sample calls. On Tinker this is in the low-hour range, not days.
 
@@ -88,7 +90,7 @@ Outputs:
 ## 4. Decision points to resolve before running
 
 1. **Seeds.** Is a single seed (42) sufficient, or should we run seeds 0 and 1 too for the final-step cells (to get error bars matching Fig. 1)?
-2. **8B extension.** Is the 4B result worth running on 8B? The 8B Reflect-Full checkpoints exist at step {50, 150, 250, 350, 500} for seed0; the sweep driver has a `--model 8b` path that's staged but not enabled by default.
+2. **8B extension.** Is the 4B result worth running on 8B? The 8B RRR-Grounded checkpoints exist at step {50, 150, 250, 350, 500} for seed0; the sweep driver has a `--model 8b` path that's staged but not enabled by default.
 3. **Greedy definition.** Stick with `sample_idx=0 at T=0.7`, or run a separate T=0 decode per checkpoint for a true greedy measurement? The current choice is cheaper and keeps the metric family consistent; the alternative is cleaner but doubles eval cost.
 
 ## 5. Expected results (from prior context)
@@ -96,7 +98,7 @@ Outputs:
 From Phase 11 and the reflect_full_retry evaluation:
 
 - At step 0 (SFT): oracle pass@16 ≈ 51% (GSM8K) / 37% (MATH); greedy ≈ 24% / 16%. **Gap ≈ 27 pp / 21 pp.**
-- At step 500 Reflect-Full: greedy pass@1 ≈ 32.5% (GSM8K) / 18.5% (MATH). Oracle not yet measured — hypothesis: stays roughly flat (~50% / ~36%), so **gap shrinks to ≈ 18 pp / 18 pp**.
+- At step 500 RRR-Grounded: greedy pass@1 ≈ 32.5% (GSM8K) / 18.5% (MATH). Oracle not yet measured — hypothesis: stays roughly flat (~50% / ~36%), so **gap shrinks to ≈ 18 pp / 18 pp**.
 - At step 500 Baseline CoT RLVR: greedy pass@1 ≈ 31.5% (GSM8K) / 16.5% (MATH). Same hypothesis: oracle roughly flat, **gap shrinks to ≈ 19 pp / 19 pp**.
 
 If the hypothesis holds, both training trajectories look like *elicitation*, not capability expansion. This is consistent with the project's existing thesis: "failure modes are correlated → reflection is an elicitation problem, not a search problem." Confirming this with a training-step sweep is the leap from a cross-sectional claim to a longitudinal one.

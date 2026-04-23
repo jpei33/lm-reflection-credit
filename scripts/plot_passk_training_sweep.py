@@ -7,10 +7,10 @@ run_passk_training_sweep.py) and produce the Phase 15 figure:
     figures/fig2b_passk_training_sweep.png
 
 Four panels — one per (condition, dataset):
-  - Reflect-Full / GSM8K   (top left)
-  - Reflect-Full / MATH    (top right)
-  - Baseline CoT  / GSM8K   (bottom left)
-  - Baseline CoT  / MATH    (bottom right)
+  - RRR-Grounded / GSM8K   (top left)
+  - RRR-Grounded / MATH    (top right)
+  - Baseline CoT / GSM8K   (bottom left)
+  - Baseline CoT / MATH    (bottom right)
 
 Each panel shows two curves across training steps (SFT → mid → step500):
   - oracle (pass@16, solid blue) — capability ceiling
@@ -248,7 +248,7 @@ def _summarise_cell(
 # ---------------------------------------------------------------------------
 
 
-_CONDITION_LABELS = {"reflect_full": "Reflect-Full (RLVR)", "baseline_cot": "Baseline CoT (RLVR)"}
+_CONDITION_LABELS = {"reflect_full": "RRR-Grounded (RLVR)", "baseline_cot": "Baseline CoT (RLVR)"}
 _DATASET_LABELS   = {"gsm8k": "GSM8K", "math": "MATH"}
 _C_ORACLE = "#2c7fb8"
 _C_GREEDY = "#d95f02"

@@ -43,11 +43,13 @@ Design choices
   - greedy = sample_idx=0 of the BoN group          (free; same distribution)
   - evaluation sets = gsm8k_test_200 + math_test_200 (reused)
   - seeds = 42                                      (keep first run cheap)
-  - conditions:
-      * Reflect-Full + RLVR   → rrr-grounded-r8-seed42-v7
-      * Baseline CoT + RLVR   → baseline_rlvr_solve-r8-seed42
+  - conditions (Phase 15 labelling; see EXPERIMENTS.md for naming note):
+      * RRR-Grounded + RLVR  → rrr-grounded-r8-seed42-v7
+        (inference-format category: "Reflect-Full + Retry";
+         internal condition key still "reflect_full" for compatibility)
+      * Baseline CoT + RLVR  → baseline_rlvr_solve-r8-seed42
   - training steps = {SFT (step 0), mid, 500}       (3-point sweep)
-        mid = step 350 for Reflect-Full (rrr-grounded-v7), step 300 for
+        mid = step 350 for RRR-Grounded (rrr-grounded-v7), step 300 for
         Baseline CoT (baseline_rlvr_solve). Closest available checkpoints on
         disk; both are ~60-70% through training.
 
