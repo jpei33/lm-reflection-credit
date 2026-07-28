@@ -162,7 +162,7 @@ GRPO underperforms RLVR by 3.3pp at 4B but matches it at 8B — a capacity × al
 ## Setup
 
 ```bash
-git clone https://github.com/your-username/lm-reflection-credit
+git clone https://github.com/jpei33/lm-reflection-credit
 cd lm-reflection-credit
 python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
@@ -318,7 +318,9 @@ figures/                   # All paper figures
 
 ```bibtex
 @article{pei2025grounded,
-  title   = {Grounded Reflection for Math Self-Correction: When SFT Helps and Hurts (dummy example)},
+  title   = {Grounded Reflection for Math Self-Correction: When SFT Helps and Hurts},
   author  = {Pei, Justin},
   year    = {2025},
-  note    = {
+  note    = {Preprint in preparation}
+}
+```
